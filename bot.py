@@ -39,7 +39,9 @@ def health():
 # ----- কনফিগারেশন -----
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN not set!")
+    logger.error("❌ BOT_TOKEN environment variable not set!")
+else:
+    logger.info(f"✅ BOT_TOKEN loaded (first 5 chars: {BOT_TOKEN[:5]}...)")
 
 # ----- ক্রিপ্টো -----
 OBFUSCATED_AES_KEY_B64 = "Xe53JgjByDVFfeZl9W+TyCcATz4ux1PHf9Mih7Vsre0="
@@ -253,7 +255,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, "❌ Keystore not found! Please upload signer/myKey.p12")
             return
 
-        # Read password from file or env
         pass_file = os.path.join(os.getcwd(), 'signer', 'keystore_pass.txt')
         if os.path.exists(pass_file):
             with open(pass_file, 'r') as f:
@@ -261,7 +262,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         else:
             passwd = os.environ.get('KEYSTORE_PASS', '123456')
 
-        # jarsigner with PKCS12
         cmd = f"jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore {keystore} -storetype PKCS12 -storepass {passwd} -keypass {passwd} {output_apk} mykey"
         logger.info(f"Running: {cmd}")
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -361,21 +361,25 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - This help"
     )
 
-# ----- বট রান -----
+# ----- বট রান (ফিক্স: stop_signals=None, drop_pending_updates=True) -----
 def run_bot():
     try:
         init_db()
         if not BOT_TOKEN:
-            logger.error("BOT_TOKEN missing!")
+            logger.error("BOT_TOKEN missing! Bot will not start.")
             return
+
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("activate", activate))
         application.add_handler(CallbackQueryHandler(button_handler))
         application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
-        logger.info("✅ Bot started polling!")
-        application.run_polling()
+
+        logger.info("✅ Bot starting polling...")
+        # FIX: stop_signals=None avoids the cleanup callback bug
+        application.run_polling(stop_signals=None, drop_pending_updates=True)
+
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
 
