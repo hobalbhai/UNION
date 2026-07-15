@@ -12,7 +12,6 @@ import random
 import string
 import time
 import logging
-import asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -354,35 +353,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - This help"
     )
 
-# ----- বট রান (asyncio দিয়ে) -----
-async def bot_main():
-    try:
-        init_db()
-        if not BOT_TOKEN:
-            logger.error("BOT_TOKEN missing! Bot will not start.")
-            return
+# ----- Flask-কে থ্রেডে চালানোর ফাংশন -----
+def run_flask():
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
 
-        application = Application.builder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("activate", activate))
-        application.add_handler(CallbackQueryHandler(button_handler))
-        application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
-
-        logger.info("✅ Bot starting polling...")
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling(
-            drop_pending_updates=True,
-            stop_signals=[]
-        )
-        # Keep running
-        while True:
-            await asyncio.sleep(3600)
-    except Exception as e:
-        logger.error(f"Bot crashed: {e}")
-
-# ----- বট রান (সরল ও কার্যকরী পদ্ধতি) -----
+# ----- বট রান (মেইন থ্রেডে) -----
 def run_bot():
     try:
         init_db()
@@ -398,14 +374,15 @@ def run_bot():
         application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
 
         logger.info("✅ Bot starting polling...")
-        # stop_signals=[] দেওয়ার দরকার নেই, নতুন ভার্সনে এটি ঠিক করা হয়েছে
         application.run_polling(drop_pending_updates=True)
 
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
 
+# ----- মেইন -----
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    bot_thread.start()
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    # Flask আলাদা থ্রেডে চালু করুন
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    # বট মেইন থ্রেডে চালু করুন
+    run_bot()
