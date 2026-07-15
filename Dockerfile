@@ -12,7 +12,7 @@ RUN wget -O /usr/local/bin/apktool https://raw.githubusercontent.com/iBotPeaches
     chmod +x /usr/local/bin/apktool.jar
 ENV APKTOOL_JAR=/usr/local/bin/apktool.jar
 
-# Install apksigner directly from build-tools
+# apksigner – সরাসরি build-tools থেকে
 RUN mkdir -p /opt/build-tools && cd /opt/build-tools && \
     wget -q https://dl.google.com/android/repository/build-tools_r34-linux.zip && \
     unzip build-tools_r34-linux.zip && \
