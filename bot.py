@@ -226,7 +226,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         # Sign
         signed_apk = os.path.join(work_dir, 'signed.apk')
-        keystore = os.path.join(os.getcwd(), 'signer/keystore.jks')
+        keystore = os.path.join(os.getcwd(), 'signer/myKey.p12')
         passwd = os.environ.get('KEYSTORE_PASS', '123456')
         cmd = f"jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore {keystore} -storepass {passwd} -keypass {passwd} {output_apk} mykey"
         subprocess.run(cmd, shell=True, check=True, capture_output=True)
