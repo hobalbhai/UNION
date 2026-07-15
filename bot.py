@@ -68,7 +68,7 @@ ACTUAL_AES_KEY = decode_obfuscated(OBFUSCATED_AES_KEY_B64)
 ACTUAL_XOR_KEY = decode_obfuscated(OBFUSCATED_XOR_KEY_B64)
 IV_HEX = "aabbccddeeffaabbccddeeffaabbccdd"
 NUM_PARTS = 15
-PREFIX = ""   # <-- খালি রাখুন (getSecret(3) খালি স্ট্রিং দিলে)
+PREFIX = "part_"   # <-- খালি রাখুন (getSecret(3) খালি স্ট্রিং দিলে)
 TARGET_PACKAGE = "com.meteah.apl"
 
 # ----- ডাটাবেস (কী + ডেইলি লিমিট) -----
