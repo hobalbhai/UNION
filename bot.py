@@ -228,7 +228,7 @@ async def send_progress(chat_id, text, context, delay=0.2):
         await context.bot.send_message(chat_id, text)
         await asyncio.sleep(delay)
     except Exception:
-        pass  # সাইলেন্ট ইগনোর
+        pass
 
 # ----- APK প্রসেসিং (দ্রুত, অ্যালাইনমেন্ট সহ) -----
 async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, apk_data: bytes):
@@ -608,7 +608,6 @@ def run_bot():
             logger.error("BOT_TOKEN missing! Bot will not start.")
             return
 
-        # গ্লোবাল টাইমআউট সেট (600 সেকেন্ড)
         application = (
             Application.builder()
             .token(BOT_TOKEN)
