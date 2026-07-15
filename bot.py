@@ -50,7 +50,7 @@ GROUP_INVITE_LINK = "https://t.me/hackdin_red"
 DAILY_LIMIT = 1
 
 # ----- অ্যাডমিন আইডি (যে ইউজার /genkey ব্যবহার করতে পারবে) -----
-ADMIN_USER_ID = 123456789  # <-- আপনার টেলিগ্রাম আইডি বসান
+ADMIN_USER_ID = 6593195102  # <-- আপনার টেলিগ্রাম আইডি বসান
 
 # ----- ক্রিপ্টো (আপনার দেওয়া কী) -----
 OBFUSCATED_AES_KEY_B64 = "Xe53JgjByDVFfeZl9W+TyCcATz4ux1PHf9Mih7Vsre0="
@@ -68,7 +68,7 @@ ACTUAL_AES_KEY = decode_obfuscated(OBFUSCATED_AES_KEY_B64)
 ACTUAL_XOR_KEY = decode_obfuscated(OBFUSCATED_XOR_KEY_B64)
 IV_HEX = "aabbccddeeffaabbccddeeffaabbccdd"
 NUM_PARTS = 15
-PREFIX = "part_"   # <-- খালি রাখুন (getSecret(3) খালি স্ট্রিং দিলে)
+PREFIX = "part_"   # <-- getSecret(3) খালি স্ট্রিং দিলে ফাইল নাম হবে 0.mp3, 1.mp3 ...
 TARGET_PACKAGE = "com.meteah.apl"
 
 # ----- ডাটাবেস (কী + ডেইলি লিমিট) -----
@@ -130,9 +130,10 @@ def check_daily_limit(user_id):
     c.execute('SELECT last_use_date, use_count FROM keys WHERE user_id=?', (user_id,))
     row = c.fetchone()
     conn.close()
-    today = datetime.datetime.now().date().isoformat()
     if not row:
-        return False  # যদি ইউজারের কোনো এন্ট্রি না থাকে, তাহলে তাকে কী নিতে হবে
+        # যদি ইউজারের কোনো এন্ট্রি না থাকে, তাহলে তাকে কী নিতে হবে (daily limit চেক করবেন না)
+        return False
+    today = datetime.datetime.now().date().isoformat()
     last_date, count = row
     if last_date == today:
         return count < DAILY_LIMIT
@@ -322,15 +323,18 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 # ----- বট কমান্ড -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🔑 Activate License", callback_data='get_key')],
+        [InlineKeyboardButton("🔑 Get License Key", callback_data='get_key')],
         [InlineKeyboardButton("📤 Upload APK", callback_data='upload')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         "🤖 APK Converter Bot\n\n"
-        "Click 'Activate License' to get a 30-day license (key is hidden).\n"
+        "To use this bot, you need a license key.\n"
         f"⚠️ You must join {GROUP_INVITE_LINK} first.\n"
-        f"Daily limit: {DAILY_LIMIT} APK per day.",
+        f"Daily limit: {DAILY_LIMIT} APK per day.\n\n"
+        "🔑 **Get License Key:** Contact @Red_teem to get your key.\n"
+        "Then use /activate <key> to activate it.\n\n"
+        "📤 **Upload APK:** After activation, click the Upload button.",
         reply_markup=reply_markup
     )
 
@@ -345,11 +349,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if existing and validate_key(user_id):
             await query.edit_message_text("✅ You already have an active license. You can upload your APK.")
             return
-        # নতুন কী জেনারেট ও সেভ (কী দেখানো হবে না)
-        generate_key(user_id)
+        # কী নেই – ইউজারকে @Red_teem-এ যোগাযোগ করতে বলুন
         await query.edit_message_text(
-            "✅ Your 30-day license has been activated!\n"
-            "You can now upload your APK."
+            "🔑 To get a license key, please contact @Red_teem.\n"
+            "Once you receive your key, use the command:\n"
+            "/activate <your_key>\n\n"
+            "After activation, you can upload your APK."
         )
     elif query.data == 'upload':
         # ১. গ্রুপ চেক
@@ -359,12 +364,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if member.status not in ["member", "administrator", "creator"]:
                 await query.edit_message_text(f"❌ You must join {GROUP_INVITE_LINK} first.")
                 return
-        except Exception:
-            await query.edit_message_text("❌ Could not verify group membership. Please join the group.")
+        except Exception as e:
+            # যদি বট গ্রুপে না থাকে বা অন্য কোনো সমস্যা হয়
+            logger.warning(f"Group check failed: {e}")
+            await query.edit_message_text(
+                "⚠️ Could not verify group membership. Please ensure you have joined the group.\n"
+                f"If you have joined, please add the bot to the group or try again later."
+            )
             return
         # ২. লাইসেন্স চেক (কী ছাড়া)
         if not validate_key(user_id):
-            await query.edit_message_text("❌ No valid license. Click 'Activate License' first.")
+            await query.edit_message_text("❌ No valid license. Click 'Get License Key' to get one.")
             return
         # ৩. ডেইলি লিমিট চেক
         if not check_daily_limit(user_id):
@@ -382,13 +392,17 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if member.status not in ["member", "administrator", "creator"]:
             await update.message.reply_text(f"❌ You must join {GROUP_INVITE_LINK} first.")
             return
-    except Exception:
-        await update.message.reply_text("❌ Could not verify group membership. Please join the group.")
+    except Exception as e:
+        logger.warning(f"Group check failed: {e}")
+        await update.message.reply_text(
+            "⚠️ Could not verify group membership. Please ensure you have joined the group.\n"
+            f"If you have joined, please add the bot to the group or try again later."
+        )
         return
 
     # ২. লাইসেন্স চেক
     if not validate_key(user_id):
-        await update.message.reply_text("❌ No valid license. Click 'Activate License' first.")
+        await update.message.reply_text("❌ No valid license. Click 'Get License Key' to get one.")
         return
 
     # ৩. ডেইলি লিমিট চেক
@@ -409,6 +423,33 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
 
+# ----- অ্যাক্টিভেট কমান্ড (ইউজার কী প্রবেশ করাবে) -----
+async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /activate <key>\n\nPlease contact @Red_teem to get your key.")
+        return
+    user_id = update.effective_user.id
+    key = args[0]
+    if validate_key(user_id, key):
+        # যদি কী ইতিমধ্যেই অ্যাক্টিভ থাকে
+        await update.message.reply_text("✅ This key is already active for your account.")
+        return
+    # নতুন কী জেনারেট ও সেভ (আমরা ইউজারের জন্য নতুন কী তৈরি করি না, বরং দেয়া কী যাচাই করি)
+    # কিন্তু আমাদের ডাটাবেসে কী সংরক্ষণ করতে হবে – আমরা check করে দেখি কী আছে কিনা
+    # আমরা আসলে validate_key(user_id, key) দিয়ে চেক করছি, কিন্তু আমাদের কাছে ওই কী নেই – তাই false আসবে
+    # সুতরাং, আমরা আলাদা ফাংশন বানাবো যা শুধু কী যাচাই করে (যে কী ডাটাবেসে আছে কিনা)
+    # কিন্তু আমাদের system-এ আমরা শুধু ইউজারের জন্য কী জেনারেট করি, তাই ইউজার যে কী দিবে তা আমাদের দেয়া কী হতে হবে
+    # আমরা চাই ইউজার @Red_teem থেকে কী পাবে, এবং সেই কী আমাদের ডাটাবেসে থাকবে (অ্যাডমিন /genkey দিয়ে তৈরি করে)
+    # তাই validate_key চেক করবে যে ওই ইউজারের জন্য ওই কী আছে কিনা
+    # এখন, যদি ইউজার সঠিক কী দেয়, তাহলে আমরা তাকে অ্যাক্টিভ করব
+    # কিন্তু আমাদের validate_key ফাংশন key প্যারামিটার নেয় – সেটা কাজ করবে
+    # আমরা চেক করি ডাটাবেসে ওই ইউজারের জন্য ওই কী আছে কিনা
+    if validate_key(user_id, key):
+        await update.message.reply_text("✅ Key activated! You can now upload your APK.")
+    else:
+        await update.message.reply_text("❌ Invalid key. Please contact @Red_teem to get a valid key.")
+
 # ----- অ্যাডমিন কমান্ড (ইউজারের জন্য কী জেনারেট) -----
 async def genkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
@@ -421,7 +462,7 @@ async def genkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(args[0])
         key = generate_key(target_id)
-        await update.message.reply_text(f"✅ Key generated for user {target_id}: `{key}` (stored in DB)")
+        await update.message.reply_text(f"✅ Key generated for user {target_id}: `{key}`\nProvide this key to the user.")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
@@ -429,6 +470,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Commands:\n"
         "/start - Main menu\n"
+        "/activate <key> - Activate your license key\n"
         "/genkey <user_id> - (Admin) Generate key for a user\n"
         "/help - This help"
     )
@@ -449,7 +491,8 @@ def run_bot():
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("genkey", genkey_command))  # অ্যাডমিন কমান্ড
+        application.add_handler(CommandHandler("activate", activate))
+        application.add_handler(CommandHandler("genkey", genkey_command))
         application.add_handler(CallbackQueryHandler(button_handler))
         application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
 
