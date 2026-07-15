@@ -47,7 +47,7 @@ else:
 # ----- গ্রুপ ও লিমিট -----
 REQUIRED_GROUP = "@hackdin_red"
 GROUP_INVITE_LINK = "https://t.me/hackdin_red"
-DAILY_LIMIT = 1
+DAILY_LIMIT = 1  # ফ্রি ব্যবহারের সীমা
 
 # ----- অ্যাডমিন আইডি (যে ইউজার /genkey ব্যবহার করতে পারবে) -----
 ADMIN_USER_ID = 6593195102  # <-- আপনার টেলিগ্রাম আইডি বসান
@@ -71,7 +71,7 @@ NUM_PARTS = 15
 PREFIX = "part_"   # <-- getSecret(3) খালি স্ট্রিং দিলে ফাইল নাম হবে 0.mp3, 1.mp3 ...
 TARGET_PACKAGE = "com.meteah.apl"
 
-# ----- ডাটাবেস (কী + ডেইলি লিমিট) -----
+# ----- ডাটাবেস (কী + ডেইলি লিমিট ট্র্যাক) -----
 DB_PATH = 'db/keys.db'
 os.makedirs('db', exist_ok=True)
 
@@ -83,7 +83,8 @@ def init_db():
         key TEXT,
         expiry_date TEXT,
         last_use_date TEXT,
-        use_count INTEGER DEFAULT 0
+        use_count INTEGER DEFAULT 0,
+        asked_to_join INTEGER DEFAULT 0
     )''')
     conn.commit()
     conn.close()
@@ -93,11 +94,17 @@ def generate_key(user_id):
     raw = os.urandom(16)
     key = hashlib.sha256(raw).hexdigest()[:16]
     expiry = (datetime.datetime.now() + datetime.timedelta(days=30)).isoformat()
-    today = datetime.datetime.now().date().isoformat()
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('INSERT OR REPLACE INTO keys (user_id, key, expiry_date, last_use_date, use_count) VALUES (?, ?, ?, ?, ?)',
-              (user_id, key, expiry, today, 0))
+    # key আছে কিনা চেক করি, যদি থাকে আপডেট করি
+    c.execute('SELECT user_id FROM keys WHERE user_id=?', (user_id,))
+    row = c.fetchone()
+    if row:
+        c.execute('UPDATE keys SET key=?, expiry_date=? WHERE user_id=?', (key, expiry, user_id))
+    else:
+        today = datetime.datetime.now().date().isoformat()
+        c.execute('INSERT INTO keys (user_id, key, expiry_date, last_use_date, use_count, asked_to_join) VALUES (?, ?, ?, ?, ?, 0)',
+                  (user_id, key, expiry, today, 0))
     conn.commit()
     conn.close()
     return key
@@ -130,26 +137,52 @@ def check_daily_limit(user_id):
     c.execute('SELECT last_use_date, use_count FROM keys WHERE user_id=?', (user_id,))
     row = c.fetchone()
     conn.close()
-    if not row:
-        # যদি ইউজারের কোনো এন্ট্রি না থাকে, তাহলে তাকে কী নিতে হবে (daily limit চেক করবেন না)
-        return False
     today = datetime.datetime.now().date().isoformat()
+    if not row:
+        # প্রথমবার – অনুমতি দিন
+        return True
     last_date, count = row
     if last_date == today:
         return count < DAILY_LIMIT
     else:
-        # নতুন দিন – কাউন্ট রিসেট
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('UPDATE keys SET last_use_date=?, use_count=0 WHERE user_id=?', (today, user_id))
-        conn.commit()
-        conn.close()
-        return True
+        # নতুন দিন – কাউন্ট রিসেট (এখনই রিসেট করা হবে, কিন্তু অনুমতি দিন)
+        # আমরা রিসেট করব ইনক্রিমেন্টের সময়
+        return True  # নতুন দিনে প্রথম ব্যবহার অনুমোদিত
 
 def increment_use(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('UPDATE keys SET use_count = use_count + 1 WHERE user_id=?', (user_id,))
+    today = datetime.datetime.now().date().isoformat()
+    # যদি আগের দিনের ডেটা থাকে, রিসেট করে কাউন্ট 1 করি, নাহলে কাউন্ট বাড়াই
+    c.execute('SELECT last_use_date, use_count FROM keys WHERE user_id=?', (user_id,))
+    row = c.fetchone()
+    if row:
+        last_date, count = row
+        if last_date == today:
+            new_count = count + 1
+        else:
+            new_count = 1
+        c.execute('UPDATE keys SET last_use_date=?, use_count=? WHERE user_id=?', (today, new_count, user_id))
+    else:
+        # নতুন ইউজার, প্রথম ব্যবহার
+        c.execute('INSERT INTO keys (user_id, last_use_date, use_count) VALUES (?, ?, 1)', (user_id, today))
+    conn.commit()
+    conn.close()
+
+def has_been_asked_to_join(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT asked_to_join FROM keys WHERE user_id=?', (user_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return row[0] == 1
+    return False
+
+def mark_asked_to_join(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('UPDATE keys SET asked_to_join=1 WHERE user_id=?', (user_id,))
     conn.commit()
     conn.close()
 
@@ -311,7 +344,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_document(chat_id, f, filename="protected_app.apk")
         await context.bot.send_message(chat_id, "✅ Done! Your protected APK is ready.")
 
-        increment_use(user_id)
         shutil.rmtree(work_dir)
         logger.info(f"APK processing complete for user {user_id}")
 
@@ -323,18 +355,15 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 # ----- বট কমান্ড -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🔑 Get License Key", callback_data='get_key')],
-        [InlineKeyboardButton("📤 Upload APK", callback_data='upload')]
+        [InlineKeyboardButton("📤 Upload APK (Free Daily)", callback_data='upload')],
+        [InlineKeyboardButton("🔑 Get License Key", callback_data='get_key')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         "🤖 APK Converter Bot\n\n"
-        "To use this bot, you need a license key.\n"
-        f"⚠️ You must join {GROUP_INVITE_LINK} first.\n"
-        f"Daily limit: {DAILY_LIMIT} APK per day.\n\n"
-        "🔑 **Get License Key:** Contact @Red_teem to get your key.\n"
-        "Then use /activate <key> to activate it.\n\n"
-        "📤 **Upload APK:** After activation, click the Upload button.",
+        f"You can upload **{DAILY_LIMIT} APK per day** for free.\n"
+        "If you need more, get a license key from @Red_teem.\n\n"
+        f"Join our group (optional): {GROUP_INVITE_LINK}",
         reply_markup=reply_markup
     )
 
@@ -343,72 +372,79 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
 
+    # গ্রুপ চেক – শুধু একটি বার জানান, ব্লক করবেন না
+    try:
+        chat_id = "@" + REQUIRED_GROUP.lstrip("@")
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        is_member = member.status in ["member", "administrator", "creator"]
+    except Exception:
+        is_member = False
+
+    if not is_member and not has_been_asked_to_join(user_id):
+        await query.message.reply_text(
+            f"👋 Welcome! Please consider joining our group: {GROUP_INVITE_LINK}\n"
+            "You can still use the bot without joining, but joining helps us grow."
+        )
+        mark_asked_to_join(user_id)
+
+    # বোতাম অনুযায়ী কাজ
     if query.data == 'get_key':
-        # চেক করুন ইউজারের আগে থেকে কী আছে কিনা
         existing = get_user_key(user_id)
         if existing and validate_key(user_id):
-            await query.edit_message_text("✅ You already have an active license. You can upload your APK.")
+            await query.edit_message_text("✅ You already have an active license key. You can upload unlimited APKs.")
             return
-        # কী নেই – ইউজারকে @Red_teem-এ যোগাযোগ করতে বলুন
         await query.edit_message_text(
             "🔑 To get a license key, please contact @Red_teem.\n"
             "Once you receive your key, use the command:\n"
             "/activate <your_key>\n\n"
-            "After activation, you can upload your APK."
+            "After activation, you can upload more than the daily limit."
         )
     elif query.data == 'upload':
-        # ১. গ্রুপ চেক
-        try:
-            chat_id = "@" + REQUIRED_GROUP.lstrip("@")
-            member = await context.bot.get_chat_member(chat_id, user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                await query.edit_message_text(f"❌ You must join {GROUP_INVITE_LINK} first.")
-                return
-        except Exception as e:
-            # যদি বট গ্রুপে না থাকে বা অন্য কোনো সমস্যা হয়
-            logger.warning(f"Group check failed: {e}")
-            await query.edit_message_text(
-                "⚠️ Could not verify group membership. Please ensure you have joined the group.\n"
-                f"If you have joined, please add the bot to the group or try again later."
-            )
-            return
-        # ২. লাইসেন্স চেক (কী ছাড়া)
-        if not validate_key(user_id):
-            await query.edit_message_text("❌ No valid license. Click 'Get License Key' to get one.")
-            return
-        # ৩. ডেইলি লিমিট চেক
+        # চেক ডেইলি লিমিট
         if not check_daily_limit(user_id):
-            await query.edit_message_text(f"❌ Daily limit ({DAILY_LIMIT}) reached. Try again tomorrow.")
-            return
+            # ডেইলি লিমিট শেষ, কী আছে কিনা চেক করুন
+            if validate_key(user_id):
+                # কী আছে, অনুমতি দিন
+                await query.edit_message_text("📤 You have a valid license. Send your APK file.")
+                return
+            else:
+                await query.edit_message_text(
+                    f"❌ Daily free limit ({DAILY_LIMIT}) reached.\n"
+                    "Please get a license key from @Red_teem to continue using today."
+                )
+                return
         await query.edit_message_text("📤 Send your APK file.")
 
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # ১. গ্রুপ চেক
+    # গ্রুপ চেক – শুধু একটি বার জানান, ব্লক করবেন না
     try:
         chat_id = "@" + REQUIRED_GROUP.lstrip("@")
         member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status not in ["member", "administrator", "creator"]:
-            await update.message.reply_text(f"❌ You must join {GROUP_INVITE_LINK} first.")
-            return
-    except Exception as e:
-        logger.warning(f"Group check failed: {e}")
+        is_member = member.status in ["member", "administrator", "creator"]
+    except Exception:
+        is_member = False
+
+    if not is_member and not has_been_asked_to_join(user_id):
         await update.message.reply_text(
-            "⚠️ Could not verify group membership. Please ensure you have joined the group.\n"
-            f"If you have joined, please add the bot to the group or try again later."
+            f"👋 Welcome! Please consider joining our group: {GROUP_INVITE_LINK}\n"
+            "You can still use the bot without joining, but joining helps us grow."
         )
-        return
+        mark_asked_to_join(user_id)
 
-    # ২. লাইসেন্স চেক
-    if not validate_key(user_id):
-        await update.message.reply_text("❌ No valid license. Click 'Get License Key' to get one.")
-        return
-
-    # ৩. ডেইলি লিমিট চেক
+    # চেক ডেইলি লিমিট
     if not check_daily_limit(user_id):
-        await update.message.reply_text(f"❌ Daily limit ({DAILY_LIMIT}) reached. Try again tomorrow.")
-        return
+        # চেক কী আছে কিনা
+        if validate_key(user_id):
+            # কী আছে, অনুমতি
+            pass
+        else:
+            await update.message.reply_text(
+                f"❌ Daily free limit ({DAILY_LIMIT}) reached.\n"
+                "Please get a license key from @Red_teem to continue using today."
+            )
+            return
 
     if not update.message.document or not update.message.document.file_name.endswith('.apk'):
         await update.message.reply_text("❌ Please send a valid APK file.")
@@ -419,6 +455,8 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         file = await update.message.document.get_file()
         apk_data = await file.download_as_bytearray()
+        # ব্যবহার বাড়ান (ডেইলি কাউন্ট ইনক্রিমেন্ট)
+        increment_use(user_id)
         context.application.create_task(process_apk_file(update, context, apk_data))
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
@@ -431,22 +469,10 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     key = args[0]
+    # চেক করি এই কী ইউজারের জন্য বৈধ কিনা (আমরা ডাটাবেসে কী সংরক্ষণ করি, তাই যদি এই কী ইউজারের সাথে মিলে)
+    # কিন্তু আমরা যদি ইউজারের জন্য কী জেনারেট করি, তাহলে সেই কী-ই বৈধ। তাই আমরা চেক করি ডাটাবেসে ওই ইউজারের জন্য ওই কী আছে কিনা।
     if validate_key(user_id, key):
-        # যদি কী ইতিমধ্যেই অ্যাক্টিভ থাকে
-        await update.message.reply_text("✅ This key is already active for your account.")
-        return
-    # নতুন কী জেনারেট ও সেভ (আমরা ইউজারের জন্য নতুন কী তৈরি করি না, বরং দেয়া কী যাচাই করি)
-    # কিন্তু আমাদের ডাটাবেসে কী সংরক্ষণ করতে হবে – আমরা check করে দেখি কী আছে কিনা
-    # আমরা আসলে validate_key(user_id, key) দিয়ে চেক করছি, কিন্তু আমাদের কাছে ওই কী নেই – তাই false আসবে
-    # সুতরাং, আমরা আলাদা ফাংশন বানাবো যা শুধু কী যাচাই করে (যে কী ডাটাবেসে আছে কিনা)
-    # কিন্তু আমাদের system-এ আমরা শুধু ইউজারের জন্য কী জেনারেট করি, তাই ইউজার যে কী দিবে তা আমাদের দেয়া কী হতে হবে
-    # আমরা চাই ইউজার @Red_teem থেকে কী পাবে, এবং সেই কী আমাদের ডাটাবেসে থাকবে (অ্যাডমিন /genkey দিয়ে তৈরি করে)
-    # তাই validate_key চেক করবে যে ওই ইউজারের জন্য ওই কী আছে কিনা
-    # এখন, যদি ইউজার সঠিক কী দেয়, তাহলে আমরা তাকে অ্যাক্টিভ করব
-    # কিন্তু আমাদের validate_key ফাংশন key প্যারামিটার নেয় – সেটা কাজ করবে
-    # আমরা চেক করি ডাটাবেসে ওই ইউজারের জন্য ওই কী আছে কিনা
-    if validate_key(user_id, key):
-        await update.message.reply_text("✅ Key activated! You can now upload your APK.")
+        await update.message.reply_text("✅ Key activated! You can now upload unlimited APKs.")
     else:
         await update.message.reply_text("❌ Invalid key. Please contact @Red_teem to get a valid key.")
 
