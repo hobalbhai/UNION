@@ -382,12 +382,30 @@ async def bot_main():
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
 
+# ----- বট রান (সরল ও কার্যকরী পদ্ধতি) -----
 def run_bot():
-    asyncio.run(bot_main())
+    try:
+        init_db()
+        if not BOT_TOKEN:
+            logger.error("BOT_TOKEN missing! Bot will not start.")
+            return
 
-# ----- মেইন -----
+        application = Application.builder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("activate", activate))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
+
+        logger.info("✅ Bot starting polling...")
+        # stop_signals=[] দেওয়ার দরকার নেই, নতুন ভার্সনে এটি ঠিক করা হয়েছে
+        application.run_polling(drop_pending_updates=True)
+
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot)
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
