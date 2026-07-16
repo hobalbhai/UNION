@@ -25,7 +25,10 @@ from Crypto.Util.Padding import pad
 # ----- Java Heap Limit (apktool, apksigner এর জন্য) -----
 os.environ['JAVA_OPTS'] = '-Xmx256m'
 
+# ----- সেমাফোর ও ওয়েটিং লিস্ট -----
 processing_semaphore = asyncio.Semaphore(1)
+waiting_users = set()
+waiting_lock = asyncio.Lock()
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -446,6 +449,20 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         await context.bot.send_message(chat_id, f"❌ Error: {str(e)[:500]}")
         shutil.rmtree(work_dir, ignore_errors=True)
         gc.collect()
+    finally:
+        # ----- কাজ শেষে ওয়েটিং ইউজারদের নোটিফাই করি -----
+        async with waiting_lock:
+            if waiting_users:
+                users = list(waiting_users)
+                waiting_users.clear()
+                for uid in users:
+                    try:
+                        await context.bot.send_message(
+                            uid,
+                            "✅ The previous processing is complete! You can now upload your APK."
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to notify user {uid}: {e}")
 
 # ----- বট কমান্ড -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -505,6 +522,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
+    # ---- ১. গ্রুপ চেক ----
     try:
         chat_id = "@" + REQUIRED_GROUP.lstrip("@")
         member = await context.bot.get_chat_member(chat_id, user_id)
@@ -519,6 +537,7 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         mark_asked_to_join(user_id)
 
+    # ---- ২. ডেইলি লিমিট ও কী চেক ----
     if not check_daily_limit(user_id):
         if not validate_key(user_id):
             await update.message.reply_text(
@@ -531,6 +550,16 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please send a valid APK file.")
         return
 
+    # ---- ৩. সেমাফোর চেক (যদি অন্য কোনো কাজ চলছে) ----
+    if processing_semaphore.locked():
+        async with waiting_lock:
+            waiting_users.add(user_id)
+        await update.message.reply_text(
+            "⏳ Another APK is currently being processed. You will be notified when it's ready. Please wait."
+        )
+        return
+
+    # ---- ৪. কাজ শুরু ----
     await update.message.reply_text("📦 APK received! Processing...")
 
     try:
