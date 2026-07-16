@@ -22,6 +22,9 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
+# ----- Java Heap Limit (apktool, apksigner এর জন্য) -----
+os.environ['JAVA_OPTS'] = '-Xmx256m'
+
 processing_semaphore = asyncio.Semaphore(1)
 
 logging.basicConfig(
@@ -444,7 +447,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         shutil.rmtree(work_dir, ignore_errors=True)
         gc.collect()
 
-# ----- বট কমান্ড (আগের মতো) -----
+# ----- বট কমান্ড -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📤 Upload APK (Free Daily)", callback_data='upload')],
@@ -539,7 +542,7 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
 
-# ----- অন্যান্য কমান্ড (অপরিবর্তিত) -----
+# ----- অন্যান্য কমান্ড -----
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -579,7 +582,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# ----- পরিবর্তিত অংশ (অটো-রিস্টার্ট) -----
+# ----- অটো-রিস্টার্ট সহ বট রান -----
 def run_bot():
     while True:
         try:
