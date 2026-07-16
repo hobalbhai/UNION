@@ -539,7 +539,9 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.document.get_file()
         apk_data = await file.download_as_bytearray()
         increment_use(user_id)
-        context.application.create_task(process_apk_file(update, context, apk_data))
+        # Acquire semaphore to ensure only one APK is processed at a time
+        async with processing_semaphore:
+            await process_apk_file(update, context, apk_data)
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
 
