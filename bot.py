@@ -14,11 +14,14 @@ import time
 import logging
 import re
 import asyncio
+
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+
+processing_semaphore = asyncio.Semaphore(1)
 
 # ----- লগিং -----
 logging.basicConfig(
@@ -539,12 +542,11 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.document.get_file()
         apk_data = await file.download_as_bytearray()
         increment_use(user_id)
-        # Acquire semaphore to ensure only one APK is processed at a time
+        # Use semaphore to limit concurrent APK processing
         async with processing_semaphore:
             await process_apk_file(update, context, apk_data)
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
-
 # ----- অ্যাক্টিভেট -----
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
