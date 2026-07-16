@@ -269,28 +269,13 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             except:
                 pass
 
-        # প্যাকেজ নাম পরিবর্তন
+        # ---- শুধুমাত্র Manifest-এর package অ্যাট্রিবিউট পরিবর্তন ----
         await send_progress(chat_id, f"🔧 Changing package name to {TARGET_PACKAGE}...", context)
         manifest_path = os.path.join(decoded_user, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
             with open(manifest_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            match = re.search(r'package="([^"]+)"', content)
-            if match:
-                old_package = match.group(1)
-                for root, dirs, files in os.walk(decoded_user):
-                    for file in files:
-                        if file.endswith('.xml'):
-                            file_path = os.path.join(root, file)
-                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                xml_content = f.read()
-                            new_content = re.sub(r'package="' + re.escape(old_package) + r'"', f'package="{TARGET_PACKAGE}"', xml_content)
-                            new_content = re.sub(re.escape(old_package), TARGET_PACKAGE, new_content)
-                            if new_content != xml_content:
-                                with open(file_path, 'w', encoding='utf-8') as f:
-                                    f.write(new_content)
-            with open(manifest_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            # শুধু package="..." অ্যাট্রিবিউটটি রিপ্লেস করুন
             content = re.sub(r'package="[^"]*"', f'package="{TARGET_PACKAGE}"', content)
             with open(manifest_path, 'w', encoding='utf-8') as f:
                 f.write(content)
@@ -464,7 +449,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         await context.bot.send_message(chat_id, f"❌ Error: {str(e)[:500]}")
         shutil.rmtree(work_dir, ignore_errors=True)
 
-# ----- বট কমান্ড -----
+# ----- বট কমান্ড (আগের মতো) -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📤 Upload APK (Free Daily)", callback_data='upload')],
