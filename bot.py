@@ -466,6 +466,40 @@ async def process_apk_file(update: Update, context: ContextTypes.DEFAULT_TYPE, a
 
 # ----- বট কমান্ড -----
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # চেক করি অন্য কোনো কাজ চলছে কিনা
+    if processing_semaphore.locked():
+        await update.message.reply_text(
+            "⚠️ Another user is currently processing an APK.\n"
+            "You can still use the menu below, but please wait for the current processing to finish before uploading your APK."
+        )
+    
+    # সব সময় মেনু দেখাই
+    keyboard = [
+        [InlineKeyboardButton("📤 Upload APK (Free Daily)", callback_data='upload')],
+        [InlineKeyboardButton("🔑 Get License Key", callback_data='get_key')]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "🤖 APK Converter Bot\n\n"
+        f"You can upload **{DAILY_LIMIT} APK per day** for free.\n"
+        "If you need more, get a license key from @Red_teem.\n\n"
+        f"Join our group (optional): {GROUP_INVITE_LINK}",
+        reply_markup=reply_markup
+    )
+
+# ----- টেক্সট মেসেজ হ্যান্ডলার (যেকোনো টেক্সট মেসেজে মেনু দেখায়) -----
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # এটি start কমান্ডের মতোই কাজ করবে, যাতে ইউজার যেকোনো মেসেজে মেনু পায়
+    user_id = update.effective_user.id
+    
+    if processing_semaphore.locked():
+        await update.message.reply_text(
+            "⚠️ Another user is currently processing an APK.\n"
+            "You can still use the menu below, but please wait for the current processing to finish before uploading your APK."
+        )
+    
     keyboard = [
         [InlineKeyboardButton("📤 Upload APK (Free Daily)", callback_data='upload')],
         [InlineKeyboardButton("🔑 Get License Key", callback_data='get_key')]
@@ -634,6 +668,8 @@ def run_bot():
             application.add_handler(CommandHandler("genkey", genkey_command))
             application.add_handler(CallbackQueryHandler(button_handler))
             application.add_handler(MessageHandler(filters.Document.ALL, upload_handler))
+            # টেক্সট মেসেজ হ্যান্ডলার (যেকোনো টেক্সট মেসেজে মেনু দিতে)
+            application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
             logger.info("✅ Bot starting polling...")
             application.run_polling(drop_pending_updates=True)
